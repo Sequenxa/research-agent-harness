@@ -21,6 +21,7 @@ from research_harness.runtime.fingerprint import (
     select_relaunch_action,
 )
 from research_harness.runtime.io import load_fingerprint_file, write_fingerprint_file
+from research_harness.runtime.mutation import remediate_preflight
 from research_harness.supervisor import Supervisor, request_stop
 from research_harness.supervisor.loop import RuntimeKind
 from research_harness.supervisor.runtime_factory import create_runtime
@@ -523,6 +524,13 @@ def mutation_preflight(
         str | None,
         typer.Option("--runtime", help="Runtime adapter: file or failing-worker."),
     ] = None,
+    repair: Annotated[
+        bool,
+        typer.Option(
+            "--repair",
+            help="Apply permitted prerequisite repairs and re-run preflight.",
+        ),
+    ] = False,
 ) -> None:
     """Run project mutation preflight for a contemplated action."""
     state_path = _resolve(state_dir)
@@ -532,16 +540,22 @@ def mutation_preflight(
         state_dir=state_path,
         runtime_kind=runtime if runtime in {"file", "failing-worker"} else None,  # type: ignore[arg-type]
     )
-    observed = runtime_adapter.inspect()
-    assessment = assess_operation(
-        runtime=runtime_adapter,  # type: ignore[arg-type]
-        contract=loaded,
-        state_dir=state_path,
-        runtime_kind=kind,
-        observed=observed,
-        mutation_action=action,
-    )
-    readiness = assessment.mutation
+    if repair:
+        remediation = remediate_preflight(runtime_adapter, action)  # type: ignore[arg-type]
+        for repair_id in remediation.repairs_applied:
+            console.print(f"[green]Applied repair:[/green] {repair_id}")
+        readiness = remediation.final
+    else:
+        observed = runtime_adapter.inspect()
+        assessment = assess_operation(
+            runtime=runtime_adapter,  # type: ignore[arg-type]
+            contract=loaded,
+            state_dir=state_path,
+            runtime_kind=kind,
+            observed=observed,
+            mutation_action=action,
+        )
+        readiness = assessment.mutation
     if readiness is None:
         console.print("[red]Mutation preflight unavailable.[/red]")
         raise typer.Exit(code=1)
@@ -553,8 +567,14 @@ def mutation_preflight(
         mark = "✓" if check.passed else "✗"
         detail = f" — {check.detail}" if check.detail else ""
         console.print(f"{mark} {check.name}{detail}")
-    if readiness.status.value != "READY":
-        raise typer.Exit(code=1)
+    for repair_item in readiness.repairs:
+        desc = f" — {repair_item.description}" if repair_item.description else ""
+        console.print(f"→ repair required: {repair_item.repair_id}{desc}")
+    if readiness.status.value == "READY":
+        return
+    if readiness.status.value == "REPAIRABLE" and not repair:
+        console.print("[yellow]Run with --repair to apply permitted prerequisite fixes.[/yellow]")
+    raise typer.Exit(code=1)
 
 
 @app.command("incidents")

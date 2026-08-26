@@ -37,8 +37,16 @@ class MutationReadinessStatus(StrEnum):
     """Whether a contemplated runtime mutation is permitted now."""
 
     READY = "READY"
+    REPAIRABLE = "REPAIRABLE"
     BLOCKED = "BLOCKED"
-    WAIT = "WAIT"
+
+
+class FingerprintFieldClass(StrEnum):
+    """How a fingerprint field should be treated during deployment promotion."""
+
+    DEPLOYMENT = "deployment"
+    RESEARCH_SEMANTIC = "research_semantic"
+    AUTHORIZATION_SENSITIVE = "authorization_sensitive"
 
 
 class IncidentStatus(StrEnum):

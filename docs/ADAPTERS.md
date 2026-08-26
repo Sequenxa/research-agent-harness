@@ -63,12 +63,33 @@ class MyProjectRuntime(RuntimeAdapter):
 
     def mutation_preflight(self, action: str) -> MutationReadiness:
         # Project-specific safety gate before the harness mutates runtime.
-        # Example: native scheduler authorization rebuild, safe-window boundary.
+        # Return REPAIRABLE when a standing-authorized prerequisite can be fixed first.
         checks = [
             MutationPreflightCheck(name="authorization_rebuild", passed=False,
                                    detail="authorization/source rebuild mismatch"),
         ]
-        return MutationReadiness.blocked("full_relaunch", reason="...", checks=checks)
+        return MutationReadiness.repairable(
+            "full_relaunch",
+            reason="scheduler authorization must be refreshed",
+            repairs=[
+                MutationRepair(
+                    repair_id="refresh_scheduler_authorization",
+                    description="Rebuild scheduler authorization from current source",
+                )
+            ],
+            checks=checks,
+        )
+
+    def repair_mutation_prerequisite(self, repair_id: str) -> MutationRepairResult:
+        # Apply + verify one permitted prerequisite repair.
+        return MutationRepairResult.ok(repair_id)
+
+    def fingerprint_field_classifications(self) -> dict[str, str]:
+        # deployment | research_semantic | authorization_sensitive
+        return {
+            "source_manifest_sha256": "deployment",
+            "models_toml_sha256": "research_semantic",
+        }
 
     def repository_fingerprint(self) -> dict[str, str] | None:
         # Optional: current repository/source manifest (may differ from running).
@@ -87,11 +108,18 @@ Do not collapse native scheduler health into harness inspection health:
 | `inspection` | Can the harness observe state? |
 | `mutation_readiness` | Is a contemplated mutation safe right now? |
 
-Observe and diagnose are always permitted when inspection works. Plan remediation is permitted. **Mutate/relaunch** requires passing `mutation_preflight(action)` in addition to harness authority.
+| Preflight status | Meaning | Harness action |
+|------------------|---------|----------------|
+| `READY` | Can mutate now | Proceed |
+| `REPAIRABLE` | Permitted prerequisite must be fixed first | Apply repairs, verify, re-run preflight |
+| `BLOCKED` | Requires authority the harness does not have | Stop mutation and escalate |
+
+Observe and diagnose are always permitted when inspection works. Plan remediation is permitted. **Mutate/relaunch** requires passing `mutation_preflight(action)` (after any REPAIRABLE remediation) in addition to harness authority.
 
 ```bash
 research-harness status
 research-harness preflight full_relaunch
+research-harness preflight full_relaunch --repair
 research-harness promote --from repository
 ```
 

@@ -160,11 +160,11 @@ Model as **lifecycle** plus independent flags rather than cramming health/progre
 - `progress`: ADVANCING | STALLED
 - `runtime_freshness`: CURRENT | STALE — running vs **desired deployment** (not repository HEAD)
 - `inspection`: AVAILABLE | UNAVAILABLE — harness can observe state
-- `mutation_readiness`: READY | BLOCKED | WAIT — project preflight for contemplated action
+- `mutation_readiness`: READY | REPAIRABLE | BLOCKED — project preflight for contemplated action
 - `incident_status`: NONE | OPEN | RECOVERING | VERIFYING
 - `verification_level`: PATCHED | VERIFIED | STABLE
 
-Observe/diagnose/plan are permitted when inspection works. Mutate/relaunch additionally requires `mutation_preflight(action)` from the project adapter.
+Observe/diagnose/plan are permitted when inspection works. Mutate/relaunch additionally requires `mutation_preflight(action)` from the project adapter. When preflight returns **REPAIRABLE**, the harness applies listed prerequisite repairs (with verification), re-runs preflight, then mutates if READY.
 
 Transitions must be recorded. A process being alive does not imply RUNNING or STABLE.
 

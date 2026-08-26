@@ -13,7 +13,12 @@ from research_harness.adapters.base import (
     RuntimeAdapter,
 )
 from research_harness.models.enums import Health, Lifecycle, Progress, RuntimeFreshness
-from research_harness.models.mutation import MutationPreflightCheck, MutationReadiness
+from research_harness.models.mutation import (
+    MutationPreflightCheck,
+    MutationReadiness,
+    MutationRepair,
+    MutationRepairResult,
+)
 from research_harness.models.state import ObservedState
 from research_harness.watchdog.evaluator import ProgressContext, WatermarkObservation
 
@@ -61,10 +66,13 @@ class WorkerState:
     cumulative_effect: float = 0.0
     scientific_result_recorded: bool = False
     pending_config_hash: str | None = None
+    authorized_config_hash: str | None = None
+    authorization_history: list[str] = field(default_factory=list)
     restart_count: int = 0
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> WorkerState:
+        history = data.get("authorization_history", [])
         return cls(
             running=bool(data.get("running", True)),
             completed_units=int(data.get("completed_units", 0)),
@@ -73,6 +81,8 @@ class WorkerState:
             cumulative_effect=float(data.get("cumulative_effect", 0.0)),
             scientific_result_recorded=bool(data.get("scientific_result_recorded", False)),
             pending_config_hash=data.get("pending_config_hash"),
+            authorized_config_hash=data.get("authorized_config_hash"),
+            authorization_history=list(history) if isinstance(history, list) else [],
             restart_count=int(data.get("restart_count", 0)),
         )
 
@@ -107,16 +117,7 @@ class FailingWorkerStore:
             self.save_state(state)
             return state
         data: Any = json.loads(self.state_path.read_text(encoding="utf-8"))
-        return WorkerState(
-            running=bool(data.get("running", True)),
-            completed_units=int(data.get("completed_units", 0)),
-            last_progress_at=data.get("last_progress_at"),
-            last_heartbeat_at=data.get("last_heartbeat_at"),
-            cumulative_effect=float(data.get("cumulative_effect", 0.0)),
-            scientific_result_recorded=bool(data.get("scientific_result_recorded", False)),
-            pending_config_hash=data.get("pending_config_hash"),
-            restart_count=int(data.get("restart_count", 0)),
-        )
+        return WorkerState.from_dict(data)
 
     def save_state(self, state: WorkerState) -> None:
         self.state_path.write_text(
@@ -199,25 +200,78 @@ class FailingWorkerRuntime(RuntimeAdapter, CheckpointAdapter, DiagnosticsAdapter
     def mutation_preflight(self, action: str) -> MutationReadiness:
         running = self.inspect().fingerprint
         repository = self.repository_fingerprint()
-        auth_ok = repository.get("config_hash") == running.get("config_hash")
+        state = self.store.load_state()
+        authorized = state.authorized_config_hash or running.get("config_hash")
+        auth_ok = repository.get("config_hash") == authorized
         checks = [
             MutationPreflightCheck(
                 name="authorization_rebuild",
                 passed=auth_ok,
                 detail=(
-                    "source manifest matches running deployment"
+                    "scheduler authorization matches current source manifest"
                     if auth_ok
                     else "authorization/source rebuild mismatch"
                 ),
             )
         ]
         if action in {"full_relaunch", "rebuild", "service_restart"} and not auth_ok:
-            return MutationReadiness.blocked(
+            return MutationReadiness.repairable(
                 action,
-                reason="authorization/source rebuild mismatch",
+                reason="scheduler authorization must be refreshed for current source manifest",
+                repairs=[
+                    MutationRepair(
+                        repair_id="refresh_scheduler_authorization",
+                        description="Rebuild scheduler authorization from current source manifest",
+                    )
+                ],
                 checks=checks,
             )
         return MutationReadiness.ready(action)
+
+    def repair_mutation_prerequisite(self, repair_id: str) -> MutationRepairResult:
+        if repair_id != "refresh_scheduler_authorization":
+            return MutationRepairResult.failed(
+                repair_id,
+                detail=f"unknown repair: {repair_id}",
+            )
+        repository = self.repository_fingerprint()
+        new_hash = repository.get("config_hash")
+        if not new_hash:
+            return MutationRepairResult.failed(
+                repair_id,
+                detail="repository config_hash missing",
+            )
+        config = self.store.load_config()
+        state = self.store.load_state()
+        previous = state.authorized_config_hash or config.config_hash
+        history = list(state.authorization_history)
+        if previous and previous != new_hash:
+            history.append(previous)
+        state.authorization_history = history
+        state.authorized_config_hash = new_hash
+        self.store.save_state(state)
+        refreshed = state.authorized_config_hash == new_hash
+        if not refreshed:
+            return MutationRepairResult.failed(
+                repair_id,
+                detail="authorization refresh did not verify",
+            )
+        return MutationRepairResult.ok(
+            repair_id,
+            detail=f"authorization refreshed {previous} -> {new_hash}",
+        )
+
+    def fingerprint_field_classifications(self) -> dict[str, str]:
+        return {
+            "git_sha": "deployment",
+            "lock_hash": "deployment",
+            "config_hash": "deployment",
+            "model": "research_semantic",
+            "provider": "deployment",
+            "prompt_version": "research_semantic",
+            "dataset_version": "research_semantic",
+            "evaluator_version": "research_semantic",
+        }
 
     def progress_context(self) -> ProgressContext:
         observed = self.inspect()

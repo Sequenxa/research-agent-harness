@@ -8,6 +8,7 @@ from research_harness.contract.models import ProjectContract
 from research_harness.ledger import LedgerEventType, LedgerStore
 from research_harness.models.enums import MutationReadinessStatus, RuntimeFreshness
 from research_harness.models.state import (
+    DeploymentDelta,
     DesiredState,
     ObservedState,
     ReconciliationDifference,
@@ -18,7 +19,7 @@ from research_harness.runtime.fingerprint import (
     compare_fingerprints,
     select_relaunch_action,
 )
-from research_harness.runtime.mutation import mutation_preflight_for
+from research_harness.runtime.mutation import remediate_preflight
 
 
 class Reconciler:
@@ -85,6 +86,16 @@ class Reconciler:
             self._record(result, desired=desired, observed=observed, action=action)
             return result
 
+        field_classes = self.runtime.fingerprint_field_classifications()
+        result.deployment_delta = DeploymentDelta(
+            changed_fields=list(comparison.changed_fields),
+            required_action=action,
+            field_classes={
+                field: field_classes.get(field, "deployment")
+                for field in comparison.changed_fields
+            },
+        )
+
         if not self.contract.authority.runtime_restarts:
             result.success = False
             result.blocked_reason = (
@@ -103,16 +114,25 @@ class Reconciler:
                 return result
 
         if self.observe_only:
+            remediation = remediate_preflight(
+                self.runtime, action, observe_only=True
+            )
+            if remediation.final.status == MutationReadinessStatus.REPAIRABLE:
+                for repair_id in remediation.repairs_applied:
+                    result.actions_taken.append(f"would_repair:{repair_id}")
             result.actions_taken.append(f"would_{action}")
             self._record(result, desired=desired, observed=observed, action=action)
             return result
 
-        preflight = mutation_preflight_for(self.runtime, action)
-        if preflight.status != MutationReadinessStatus.READY:
+        remediation = remediate_preflight(self.runtime, action)
+        for repair_id in remediation.repairs_applied:
+            result.actions_taken.append(f"repair:{repair_id}")
+        if remediation.final.status != MutationReadinessStatus.READY:
             result.success = False
             result.blocked_reason = (
-                preflight.reason
-                or f"Mutation preflight {preflight.status.value} for action={action}"
+                remediation.blocked_reason
+                or remediation.final.reason
+                or f"Mutation preflight {remediation.final.status.value} for action={action}"
             )
             self._record(result, desired=desired, observed=observed, action=None)
             return result
@@ -159,6 +179,11 @@ class Reconciler:
                 "action": action,
                 "actions_taken": result.actions_taken,
                 "differences": [d.model_dump(mode="json") for d in result.differences],
+                "deployment_delta": (
+                    result.deployment_delta.model_dump(mode="json")
+                    if result.deployment_delta is not None
+                    else None
+                ),
                 "desired_fingerprint": desired.fingerprint,
                 "observed_fingerprint": observed.fingerprint,
                 "runtime_freshness": (

@@ -55,12 +55,21 @@ class ReconciliationDifference(BaseModel):
     action: str | None = None
 
 
+class DeploymentDelta(BaseModel):
+    """Bundled fingerprint changes from a single deployment promotion."""
+
+    changed_fields: list[str] = Field(default_factory=list)
+    required_action: str
+    field_classes: dict[str, str] = Field(default_factory=dict)
+
+
 class ReconciliationResult(BaseModel):
     """Outcome of comparing desired and observed state."""
 
     project_id: str
     reconciled_at: datetime
     differences: list[ReconciliationDifference] = Field(default_factory=list)
+    deployment_delta: DeploymentDelta | None = None
     actions_taken: list[str] = Field(default_factory=list)
     success: bool = False
     blocked_reason: str | None = None

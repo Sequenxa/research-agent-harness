@@ -3,7 +3,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Any
 
-from research_harness.models.mutation import MutationReadiness
+from research_harness.models.mutation import MutationReadiness, MutationRepairResult
 from research_harness.models.state import ObservedState
 
 
@@ -30,6 +30,24 @@ class RuntimeAdapter(ABC):
         Default: mutations are permitted when authority allows.
         """
         return MutationReadiness.ready(action)
+
+    def repair_mutation_prerequisite(self, repair_id: str) -> MutationRepairResult:
+        """Apply and verify one permitted prerequisite repair before mutation.
+
+        Override when ``mutation_preflight`` returns REPAIRABLE with repairs.
+        Each repair must verify it took effect — do not assume exit code 0 means success.
+        """
+        return MutationRepairResult.failed(
+            repair_id,
+            detail=f"repair not implemented: {repair_id}",
+        )
+
+    def fingerprint_field_classifications(self) -> dict[str, str]:
+        """Classify fingerprint fields for deployment promotion policy.
+
+        Values: deployment | research_semantic | authorization_sensitive
+        """
+        return {}
 
 
 class CheckpointAdapter(ABC):

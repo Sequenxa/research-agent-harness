@@ -8,7 +8,12 @@ from research_harness.models.enums import (
     RuntimeFreshness,
     VerificationLevel,
 )
-from research_harness.models.mutation import MutationPreflightCheck, MutationReadiness
+from research_harness.models.mutation import (
+    MutationPreflightCheck,
+    MutationReadiness,
+    MutationRepair,
+    MutationRepairResult,
+)
 from research_harness.models.state import DesiredState, ObservedState, ReconciliationResult
 
 __all__ = [
@@ -20,6 +25,8 @@ __all__ = [
     "MutationPreflightCheck",
     "MutationReadiness",
     "MutationReadinessStatus",
+    "MutationRepair",
+    "MutationRepairResult",
     "ObservedState",
     "Progress",
     "ReconciliationResult",

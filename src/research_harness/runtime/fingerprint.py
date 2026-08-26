@@ -56,7 +56,7 @@ def select_relaunch_action(
     config: FingerprintConfig,
     comparison: FingerprintComparison,
 ) -> str | None:
-    """Pick the strongest relaunch action required by changed fields."""
+    """Pick the strongest relaunch action required by the deployment delta bundle."""
     if comparison.freshness == RuntimeFreshness.CURRENT:
         return None
 
@@ -69,6 +69,12 @@ def select_relaunch_action(
             strongest = action
             strongest_rank = rank
     return strongest
+
+
+def deployment_delta_digest(changed_fields: list[str], *, desired: dict[str, str]) -> str:
+    """Stable digest for a bundled deployment promotion."""
+    parts = [f"{field}={desired[field]}" for field in sorted(changed_fields) if field in desired]
+    return "|".join(parts)
 
 
 def fingerprint_digest(fields: dict[str, str]) -> str:
