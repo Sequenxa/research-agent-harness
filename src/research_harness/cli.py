@@ -231,9 +231,24 @@ def inspect_runtime(
 
 
 @app.command("incidents")
-def list_incidents() -> None:
-    """List incidents. (Not implemented yet.)"""
-    console.print("[yellow]Incident listing not implemented yet.[/yellow]")
+def list_incidents(
+    contract: ContractPathOption = DEFAULT_CONTRACT_PATH,
+    state_dir: StateDirOption = DEFAULT_STATE_DIR,
+) -> None:
+    """List open incidents for the project."""
+    from research_harness.incidents import IncidentStore
+
+    loaded = _load_contract_or_exit(_resolve(contract))
+    store = IncidentStore(_resolve(state_dir) / "incidents.db")
+    open_incidents = store.list_open(project_id=loaded.project.id)
+    if not open_incidents:
+        console.print("No open incidents.")
+        return
+    for incident in open_incidents:
+        console.print(
+            f"{incident.incident_id} [{incident.status.value}] "
+            f"{incident.symptom} stage={incident.stage.value}"
+        )
 
 
 @app.command("doctor")

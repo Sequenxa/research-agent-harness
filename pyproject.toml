@@ -35,6 +35,9 @@ dev = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+markers = [
+    "acceptance: end-to-end acceptance scenarios from SPEC.md",
+]
 
 [tool.ruff]
 target-version = "py313"
