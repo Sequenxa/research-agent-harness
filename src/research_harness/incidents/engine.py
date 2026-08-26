@@ -4,7 +4,11 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
-from research_harness.adapters.base import CheckpointAdapter, RuntimeAdapter
+from research_harness.adapters.base import (
+    CheckpointAdapter,
+    DiagnosticsAdapter,
+    RuntimeAdapter,
+)
 from research_harness.contract.models import ProjectContract
 from research_harness.incidents.models import Incident, IncidentRecordStatus, IncidentStage
 from research_harness.incidents.store import IncidentStore
@@ -39,6 +43,7 @@ class IncidentEngine:
         contract: ProjectContract,
         runtime: RuntimeAdapter,
         checkpoint: CheckpointAdapter | None = None,
+        diagnostics: DiagnosticsAdapter | None = None,
         incident_store: IncidentStore | None = None,
         intent_store: IntentStore | None = None,
         ledger: LedgerStore | None = None,
@@ -46,6 +51,7 @@ class IncidentEngine:
         self.contract = contract
         self.runtime = runtime
         self.checkpoint = checkpoint
+        self.diagnostics = diagnostics
         self.incident_store = incident_store
         self.intent_store = intent_store
         self.ledger = ledger
@@ -177,6 +183,13 @@ class IncidentEngine:
         if self.incident_store is None:
             msg = "Incident store is required to open incidents"
             raise RuntimeError(msg)
+        if self.diagnostics is not None:
+            diagnostics = self.diagnostics.collect(symptom=symptom)
+            evidence = {**evidence, "diagnostics": diagnostics}
+            self._record_ledger(
+                event_type=LedgerEventType.DIAGNOSIS,
+                payload={"symptom": symptom, "diagnostics": diagnostics},
+            )
         incident = self.incident_store.create(
             project_id=self.contract.project.id,
             contract_version=self.contract.contract_version,

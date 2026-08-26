@@ -7,7 +7,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from research_harness.adapters.base import CheckpointAdapter, RuntimeAdapter
+from research_harness.adapters.base import (
+    CheckpointAdapter,
+    DiagnosticsAdapter,
+    RuntimeAdapter,
+)
 from research_harness.models.enums import Health, Lifecycle, Progress, RuntimeFreshness
 from research_harness.models.state import ObservedState
 from research_harness.watchdog.evaluator import ProgressContext, WatermarkObservation
@@ -132,7 +136,7 @@ class FailingWorkerStore:
         )
 
 
-class FailingWorkerRuntime(RuntimeAdapter, CheckpointAdapter):
+class FailingWorkerRuntime(RuntimeAdapter, CheckpointAdapter, DiagnosticsAdapter):
     """File-backed failing worker used by examples and acceptance tests."""
 
     def __init__(self, *, project_id: str, state_dir: Path | str) -> None:
@@ -275,3 +279,23 @@ class FailingWorkerRuntime(RuntimeAdapter, CheckpointAdapter):
         if state.completed_units == 0:
             return 0.0
         return state.cumulative_effect / state.completed_units
+
+    def collect(self, *, symptom: str) -> dict[str, Any]:
+        config = self.store.load_config()
+        state = self.store.load_state()
+        checkpoint = self.store.load_checkpoint()
+        return {
+            "symptom": symptom,
+            "running": state.running,
+            "completed_units": state.completed_units,
+            "restart_count": state.restart_count,
+            "config_hash": config.config_hash,
+            "pending_config_hash": state.pending_config_hash,
+            "checkpoint_units": checkpoint.get("completed_units"),
+            "effect_size": self.current_effect_size(),
+        }
+
+    def stop(self) -> None:
+        state = self.store.load_state()
+        state.running = False
+        self.store.save_state(state)

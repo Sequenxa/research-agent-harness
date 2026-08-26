@@ -11,10 +11,14 @@ from research_harness.adapters.file_runtime import FileRuntimeAdapter
 from research_harness.contract.loader import format_validation_error, load_contract, write_contract
 from research_harness.contract.models import ProjectContract
 from research_harness.contract.template import default_contract
+from research_harness.incidents import IncidentStore
 from research_harness.ledger import LedgerStore
 from research_harness.reconciliation import Reconciler
 from research_harness.runtime.fingerprint import compare_fingerprints, fingerprint_digest
 from research_harness.runtime.io import load_fingerprint_file, write_fingerprint_file
+from research_harness.supervisor import Supervisor, request_stop
+from research_harness.supervisor.loop import RuntimeKind
+from research_harness.supervisor.runtime_factory import create_runtime, desired_fingerprint_for
 
 app = typer.Typer(
     name="research-harness",
@@ -61,6 +65,30 @@ def _load_contract_or_exit(contract_path: Path) -> ProjectContract:
         raise typer.Exit(code=1) from error
 
 
+def _detect_runtime_kind(state_dir: Path) -> RuntimeKind:
+    if (state_dir / "worker_state.json").exists():
+        return "failing-worker"
+    return "file"
+
+
+def _build_runtime(
+    *,
+    contract: ProjectContract,
+    state_dir: Path,
+    runtime_kind: RuntimeKind | None = None,
+) -> tuple[RuntimeKind, object]:
+    kind = runtime_kind or _detect_runtime_kind(state_dir)
+    desired_path = state_dir / "desired_fingerprint.json"
+    pending_desired = load_fingerprint_file(desired_path) if desired_path.exists() else None
+    runtime = create_runtime(
+        kind=kind,
+        project_id=contract.project.id,
+        state_dir=state_dir,
+        pending_desired=pending_desired,
+    )
+    return kind, runtime
+
+
 @app.command("init")
 def init_project(
     project_id: Annotated[str, typer.Option("--id", prompt=True)] = "example",
@@ -98,25 +126,30 @@ def project_status(
     contract: ContractPathOption = DEFAULT_CONTRACT_PATH,
     ledger: LedgerPathOption = DEFAULT_LEDGER_PATH,
     state_dir: StateDirOption = DEFAULT_STATE_DIR,
+    runtime: Annotated[
+        str | None,
+        typer.Option("--runtime", help="Runtime adapter: file or failing-worker."),
+    ] = None,
 ) -> None:
-    """Show current project status from contract, fingerprints, and ledger."""
+    """Show current project status from contract, runtime, and ledger."""
     loaded = _load_contract_or_exit(_resolve(contract))
     state_path = _resolve(state_dir)
-    desired_path = state_path / "desired_fingerprint.json"
-    observed_path = state_path / "observed_fingerprint.json"
-
-    desired_fp: dict[str, str] = {}
-    observed_fp: dict[str, str] = {}
-    freshness = "UNKNOWN"
-    if desired_path.exists() and observed_path.exists():
-        desired_fp = load_fingerprint_file(desired_path)
-        observed_fp = load_fingerprint_file(observed_path)
-        comparison = compare_fingerprints(
-            desired=desired_fp,
-            observed=observed_fp,
-            fields=loaded.fingerprint.fields,
-        )
-        freshness = comparison.freshness.value
+    kind, runtime_adapter = _build_runtime(
+        contract=loaded,
+        state_dir=state_path,
+        runtime_kind=runtime if runtime in {"file", "failing-worker"} else None,  # type: ignore[arg-type]
+    )
+    observed = runtime_adapter.inspect()
+    desired_fp = desired_fingerprint_for(
+        runtime_adapter,  # type: ignore[arg-type]
+        state_dir=state_path,
+        runtime_kind=kind,
+    )
+    comparison = compare_fingerprints(
+        desired=desired_fp,
+        observed=observed.fingerprint,
+        fields=loaded.fingerprint.fields,
+    )
 
     ledger_path = _resolve(ledger)
     latest_event = None
@@ -124,21 +157,28 @@ def project_status(
         store = LedgerStore(ledger_path)
         latest_event = store.latest_event(project_id=loaded.project.id)
 
+    incident_store = IncidentStore(state_path / "incidents.db")
+    open_incidents = incident_store.list_open(project_id=loaded.project.id)
+
     console.print(f"Project: {loaded.project.id}")
-    console.print("State: STOPPED" if not observed_fp else "State: RUNNING")
-    console.print("Runtime health: UNKNOWN")
-    console.print("Progress: UNKNOWN")
-    console.print(f"Runtime freshness: {freshness}")
+    console.print(f"Runtime: {kind}")
+    console.print(f"Lifecycle: {observed.lifecycle.value}")
+    console.print(f"Health: {observed.health.value}")
+    console.print(f"Progress: {observed.progress.value}")
+    console.print(f"Runtime freshness: {comparison.freshness.value}")
+    console.print(f"Desired fingerprint: {fingerprint_digest(desired_fp) or '(not set)'}")
     console.print(
-        "Desired fingerprint: "
-        + (fingerprint_digest(desired_fp) if desired_fp else "(not set)")
+        f"Observed fingerprint: {fingerprint_digest(observed.fingerprint) or '(empty)'}"
     )
-    console.print(
-        "Observed fingerprint: "
-        + (fingerprint_digest(observed_fp) if observed_fp else "(not set)")
-    )
-    console.print("Current incident: none")
-    console.print(f"Completed: 0 / {loaded.validity.expected_units}")
+    if open_incidents:
+        incident = open_incidents[0]
+        console.print(
+            f"Current incident: {incident.incident_id} "
+            f"[{incident.status.value}] {incident.symptom}"
+        )
+    else:
+        console.print("Current incident: none")
+    console.print(f"Completed: {observed.completed_units} / {loaded.validity.expected_units}")
     if latest_event is None:
         console.print("Ledger: no events recorded")
     else:
@@ -210,23 +250,73 @@ def reconcile_once(
 
 
 @app.command("run")
-def run_supervisor() -> None:
-    """Start the reconciliation supervisor. (Not implemented yet.)"""
-    console.print("[yellow]Supervisor not implemented yet.[/yellow]")
+def run_supervisor(
+    contract: ContractPathOption = DEFAULT_CONTRACT_PATH,
+    ledger: LedgerPathOption = DEFAULT_LEDGER_PATH,
+    state_dir: StateDirOption = DEFAULT_STATE_DIR,
+    runtime: Annotated[
+        str | None,
+        typer.Option("--runtime", help="Runtime adapter: file or failing-worker."),
+    ] = None,
+    interval: Annotated[
+        float,
+        typer.Option("--interval", help="Seconds between reconciliation ticks."),
+    ] = 1.0,
+    max_ticks: Annotated[
+        int | None,
+        typer.Option("--max-ticks", help="Stop after N ticks (for tests)."),
+    ] = None,
+) -> None:
+    """Start the reconciliation supervisor loop."""
+    loaded = _load_contract_or_exit(_resolve(contract))
+    state_path = _resolve(state_dir)
+    state_path.mkdir(parents=True, exist_ok=True)
+    kind, runtime_adapter = _build_runtime(
+        contract=loaded,
+        state_dir=state_path,
+        runtime_kind=runtime if runtime in {"file", "failing-worker"} else None,  # type: ignore[arg-type]
+    )
+    store = LedgerStore(_resolve(ledger))
+    supervisor = Supervisor(
+        contract=loaded,
+        runtime=runtime_adapter,  # type: ignore[arg-type]
+        state_dir=state_path,
+        ledger=store,
+        runtime_kind=kind,
+    )
+    try:
+        supervisor.run(interval_seconds=interval, max_ticks=max_ticks)
+    except RuntimeError as error:
+        console.print(f"[red]{error}[/red]")
+        raise typer.Exit(code=1) from error
+    console.print("[green]Supervisor stopped.[/green]")
 
 
 @app.command("inspect")
 def inspect_runtime(
     contract: ContractPathOption = DEFAULT_CONTRACT_PATH,
     state_dir: StateDirOption = DEFAULT_STATE_DIR,
+    runtime: Annotated[
+        str | None,
+        typer.Option("--runtime", help="Runtime adapter: file or failing-worker."),
+    ] = None,
 ) -> None:
-    """Inspect local observed runtime fingerprint."""
+    """Inspect observed runtime state."""
     loaded = _load_contract_or_exit(_resolve(contract))
-    runtime = FileRuntimeAdapter(project_id=loaded.project.id, state_dir=_resolve(state_dir))
-    observed = runtime.inspect()
+    state_path = _resolve(state_dir)
+    kind, runtime_adapter = _build_runtime(
+        contract=loaded,
+        state_dir=state_path,
+        runtime_kind=runtime if runtime in {"file", "failing-worker"} else None,  # type: ignore[arg-type]
+    )
+    observed = runtime_adapter.inspect()
     console.print(f"Project: {observed.project_id}")
+    console.print(f"Runtime: {kind}")
     console.print(f"Lifecycle: {observed.lifecycle.value}")
     console.print(f"Health: {observed.health.value}")
+    console.print(f"Progress: {observed.progress.value}")
+    console.print(f"Freshness: {observed.runtime_freshness.value}")
+    console.print(f"Completed units: {observed.completed_units}")
     console.print(f"Fingerprint: {fingerprint_digest(observed.fingerprint) or '(empty)'}")
 
 
@@ -236,8 +326,6 @@ def list_incidents(
     state_dir: StateDirOption = DEFAULT_STATE_DIR,
 ) -> None:
     """List open incidents for the project."""
-    from research_harness.incidents import IncidentStore
-
     loaded = _load_contract_or_exit(_resolve(contract))
     store = IncidentStore(_resolve(state_dir) / "incidents.db")
     open_incidents = store.list_open(project_id=loaded.project.id)
@@ -252,15 +340,47 @@ def list_incidents(
 
 
 @app.command("doctor")
-def doctor() -> None:
-    """Check local harness health. (Not implemented yet.)"""
-    console.print("[yellow]Doctor checks not implemented yet.[/yellow]")
+def doctor(
+    contract: ContractPathOption = DEFAULT_CONTRACT_PATH,
+    ledger: LedgerPathOption = DEFAULT_LEDGER_PATH,
+    state_dir: StateDirOption = DEFAULT_STATE_DIR,
+    runtime: Annotated[
+        str | None,
+        typer.Option("--runtime", help="Runtime adapter: file or failing-worker."),
+    ] = None,
+) -> None:
+    """Check local harness health."""
+    loaded = _load_contract_or_exit(_resolve(contract))
+    state_path = _resolve(state_dir)
+    kind, runtime_adapter = _build_runtime(
+        contract=loaded,
+        state_dir=state_path,
+        runtime_kind=runtime if runtime in {"file", "failing-worker"} else None,  # type: ignore[arg-type]
+    )
+    supervisor = Supervisor(
+        contract=loaded,
+        runtime=runtime_adapter,  # type: ignore[arg-type]
+        state_dir=state_path,
+        ledger=LedgerStore(_resolve(ledger)),
+        runtime_kind=kind,
+    )
+    report = supervisor.doctor()
+    for check in report.checks:
+        console.print(check)
+    if report.ok:
+        console.print("[green]Doctor: ok[/green]")
+    else:
+        console.print("[red]Doctor: issues found[/red]")
+        raise typer.Exit(code=1)
 
 
 @app.command("stop")
-def stop_supervisor() -> None:
-    """Stop the supervisor. (Not implemented yet.)"""
-    console.print("[yellow]Stop not implemented yet.[/yellow]")
+def stop_supervisor(
+    state_dir: StateDirOption = DEFAULT_STATE_DIR,
+) -> None:
+    """Request supervisor stop via flag file."""
+    request_stop(_resolve(state_dir))
+    console.print("[green]Stop flag set. Supervisor will exit on next tick.[/green]")
 
 
 if __name__ == "__main__":

@@ -77,4 +77,4 @@ Python 3.13. See [AGENTS.md](AGENTS.md) for agent/contributor rules.
 
 ## License
 
-Apache-2.0 (planned for public release after dogfood cycle).
+Apache-2.0 — see [LICENSE](LICENSE).

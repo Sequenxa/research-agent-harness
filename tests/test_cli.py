@@ -52,7 +52,7 @@ def test_status_without_ledger(tmp_path: Path) -> None:
     result = runner.invoke(app, ["status", "--contract", str(contract_path)])
     assert result.exit_code == 0, result.output
     assert "Project: demo" in result.output
-    assert "State: STOPPED" in result.output
+    assert "Lifecycle: STOPPED" in result.output
 
 
 def test_reconcile_cli_detects_and_fixes_stale(tmp_path: Path) -> None:
