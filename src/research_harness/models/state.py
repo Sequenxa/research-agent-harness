@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 from research_harness.models.enums import (
     Health,
     IncidentStatus,
+    InspectionStatus,
     Lifecycle,
     Progress,
     RuntimeFreshness,
@@ -35,6 +36,7 @@ class ObservedState(BaseModel):
     health: Health = Health.UNHEALTHY
     progress: Progress = Progress.STALLED
     runtime_freshness: RuntimeFreshness = RuntimeFreshness.STALE
+    inspection: InspectionStatus = InspectionStatus.AVAILABLE
     incident_status: IncidentStatus = IncidentStatus.NONE
     verification_level: VerificationLevel | None = None
     fingerprint: dict[str, str] = Field(default_factory=dict)

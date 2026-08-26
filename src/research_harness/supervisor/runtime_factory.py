@@ -61,17 +61,24 @@ def desired_fingerprint_for(
     state_dir: Path,
     runtime_kind: RuntimeKind,
 ) -> dict[str, str]:
-    if runtime_kind == "failing-worker" and isinstance(runtime, FailingWorkerRuntime):
-        config = runtime.store.load_config()
-        state = runtime.store.load_state()
-        desired = config.fingerprint()
-        if state.pending_config_hash is not None:
-            desired["config_hash"] = state.pending_config_hash
-        return desired
-    pending = getattr(runtime, "pending_fingerprint", None)
-    if pending:
-        return dict(pending)
+    """Resolve the desired deployment fingerprint.
+
+    Explicit ``desired_fingerprint.json`` wins. Otherwise desired defaults to
+    the **running** fingerprint so repository edits do not become deployment
+    instructions until promoted.
+    """
     desired_path = state_dir / "desired_fingerprint.json"
     if desired_path.exists():
         return load_fingerprint_file(desired_path)
+    if runtime_kind == "failing-worker" and isinstance(runtime, FailingWorkerRuntime):
+        state = runtime.store.load_state()
+        running = dict(runtime.inspect().fingerprint)
+        if state.pending_config_hash is not None:
+            pending = dict(running)
+            pending["config_hash"] = state.pending_config_hash
+            return pending
+        return running
+    pending = getattr(runtime, "pending_fingerprint", None)
+    if pending:
+        return dict(pending)
     return dict(runtime.inspect().fingerprint)

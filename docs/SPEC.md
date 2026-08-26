@@ -156,11 +156,15 @@ Model as **lifecycle** plus independent flags rather than cramming health/progre
 **Lifecycle:** `INITIALIZING` → `RUNNING` → `BLOCKED` | `COMPLETED` | `STOPPED`
 
 **Independent dimensions (flags, not states):**
-- `health`: HEALTHY | UNHEALTHY
+- `runtime_health`: HEALTHY | UNHEALTHY — workload functioning
 - `progress`: ADVANCING | STALLED
-- `runtime_freshness`: CURRENT | STALE
+- `runtime_freshness`: CURRENT | STALE — running vs **desired deployment** (not repository HEAD)
+- `inspection`: AVAILABLE | UNAVAILABLE — harness can observe state
+- `mutation_readiness`: READY | BLOCKED | WAIT — project preflight for contemplated action
 - `incident_status`: NONE | OPEN | RECOVERING | VERIFYING
 - `verification_level`: PATCHED | VERIFIED | STABLE
+
+Observe/diagnose/plan are permitted when inspection works. Mutate/relaunch additionally requires `mutation_preflight(action)` from the project adapter.
 
 Transitions must be recorded. A process being alive does not imply RUNNING or STABLE.
 
@@ -195,7 +199,14 @@ git_sha | dependency_lock_hash | container/image_id | model | provider
 prompt_version | dataset_version | experiment_config_hash | schema_version | evaluator_version
 ```
 
-Projects add custom fields. Harness detects `desired_fingerprint != running_fingerprint` and classifies runtime as **stale**. Stale runtime triggers reconciliation when authority permits.
+Projects add custom fields. Harness detects `desired_deployment_fingerprint != running_fingerprint` and classifies runtime as **stale**. Stale runtime triggers reconciliation when authority permits **and** `mutation_preflight(action)` passes.
+
+**Three fingerprints (do not conflate):**
+- `repository_fingerprint` — current source tree / manifest (e.g. Git HEAD)
+- `desired_deployment_fingerprint` — explicit deployment intent (`desired_fingerprint.json` or `promote`)
+- `running_fingerprint` — what the live workload is using
+
+Repository ahead of desired is normal during development; it does not imply relaunch until desired deployment is promoted.
 
 Fingerprint → relaunch action mapping may live in contract (project policy) with adapter-supplied defaults.
 

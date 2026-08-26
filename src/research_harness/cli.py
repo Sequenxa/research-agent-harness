@@ -14,11 +14,16 @@ from research_harness.contract.template import default_contract
 from research_harness.incidents import IncidentStore
 from research_harness.ledger import LedgerStore
 from research_harness.reconciliation import Reconciler
-from research_harness.runtime.fingerprint import compare_fingerprints, fingerprint_digest
+from research_harness.runtime.assessment import OperationalAssessment, assess_operation
+from research_harness.runtime.fingerprint import (
+    compare_fingerprints,
+    fingerprint_digest,
+    select_relaunch_action,
+)
 from research_harness.runtime.io import load_fingerprint_file, write_fingerprint_file
 from research_harness.supervisor import Supervisor, request_stop
 from research_harness.supervisor.loop import RuntimeKind
-from research_harness.supervisor.runtime_factory import create_runtime, desired_fingerprint_for
+from research_harness.supervisor.runtime_factory import create_runtime
 
 app = typer.Typer(
     name="research-harness",
@@ -118,6 +123,82 @@ def _build_runtime(
     return kind, runtime
 
 
+def _fingerprint_highlight_keys(contract: ProjectContract) -> list[str]:
+    preferred = ("source_manifest_sha256", "git_sha", "config_hash")
+    return [key for key in preferred if key in contract.fingerprint.fields]
+
+
+def _format_fingerprint_summary(fields: dict[str, str], *, keys: list[str]) -> str:
+    if not fields:
+        return "(empty)"
+    digest = fingerprint_digest(fields)
+    highlights = [f"{key}={fields[key]}" for key in keys if key in fields]
+    if highlights:
+        return f"{digest} ({', '.join(highlights)})"
+    return digest or "(empty)"
+
+
+def _print_operational_assessment(
+    *,
+    assessment: OperationalAssessment,
+    contract: ProjectContract,
+    runtime_kind: str,
+    project_id: str,
+    lifecycle: str,
+    observed_units: int,
+    open_incidents: list[object],
+    latest_event: object | None,
+) -> None:
+    fingerprints = assessment.fingerprints
+    highlight_keys = _fingerprint_highlight_keys(contract)
+
+    console.print(f"Project: {project_id}")
+    console.print(f"Runtime: {runtime_kind}")
+    console.print(f"Lifecycle: {lifecycle}")
+    console.print(f"Runtime health: {assessment.runtime_health.value}")
+    console.print(f"Progress: {assessment.progress.value}")
+    console.print(f"Runtime freshness: {assessment.runtime_freshness.value}")
+    console.print(f"Inspection: {assessment.inspection.value}")
+    if assessment.reconciliation_required:
+        console.print("Reconciliation: REQUIRED")
+    elif assessment.repository_ahead:
+        console.print("Reconciliation: NOT REQUIRED (repo ahead of desired)")
+    else:
+        console.print("Reconciliation: NOT REQUIRED")
+    console.print(
+        "Running fingerprint: "
+        + _format_fingerprint_summary(fingerprints.running, keys=highlight_keys)
+    )
+    console.print(
+        "Desired deployment: "
+        + _format_fingerprint_summary(fingerprints.desired, keys=highlight_keys)
+    )
+    if fingerprints.repository is not None:
+        console.print(
+            "Repository fingerprint: "
+            + _format_fingerprint_summary(fingerprints.repository, keys=highlight_keys)
+        )
+        console.print(f"Repo ahead of desired: {'YES' if assessment.repository_ahead else 'NO'}")
+    else:
+        console.print("Repository fingerprint: (not reported)")
+    if open_incidents:
+        incident = open_incidents[0]
+        console.print(
+            f"Current incident: {incident.incident_id} "
+            f"[{incident.status.value}] {incident.symptom}"
+        )
+    else:
+        console.print("Current incident: none")
+    console.print(f"Completed: {observed_units} / {contract.validity.expected_units}")
+    if latest_event is None:
+        console.print("Ledger: no events recorded")
+    else:
+        console.print(
+            f"Ledger: latest event {latest_event.event_type.value} "
+            f"at {latest_event.recorded_at.isoformat()}"
+        )
+
+
 @app.command("init")
 def init_project(
     project_id: Annotated[str, typer.Option("--id", prompt=True)] = "example",
@@ -169,15 +250,12 @@ def project_status(
         runtime_kind=runtime if runtime in {"file", "failing-worker"} else None,  # type: ignore[arg-type]
     )
     observed = runtime_adapter.inspect()
-    desired_fp = desired_fingerprint_for(
-        runtime_adapter,  # type: ignore[arg-type]
+    assessment = assess_operation(
+        runtime=runtime_adapter,  # type: ignore[arg-type]
+        contract=loaded,
         state_dir=state_path,
         runtime_kind=kind,
-    )
-    comparison = compare_fingerprints(
-        desired=desired_fp,
-        observed=observed.fingerprint,
-        fields=loaded.fingerprint.fields,
+        observed=observed,
     )
 
     ledger_path = _resolve_ledger_path(ledger, state_path)
@@ -189,32 +267,90 @@ def project_status(
     incident_store = IncidentStore(state_path / "incidents.db")
     open_incidents = incident_store.list_open(project_id=loaded.project.id)
 
-    console.print(f"Project: {loaded.project.id}")
-    console.print(f"Runtime: {kind}")
-    console.print(f"Lifecycle: {observed.lifecycle.value}")
-    console.print(f"Health: {observed.health.value}")
-    console.print(f"Progress: {observed.progress.value}")
-    console.print(f"Runtime freshness: {comparison.freshness.value}")
-    console.print(f"Desired fingerprint: {fingerprint_digest(desired_fp) or '(not set)'}")
-    console.print(
-        f"Observed fingerprint: {fingerprint_digest(observed.fingerprint) or '(empty)'}"
+    _print_operational_assessment(
+        assessment=assessment,
+        contract=loaded,
+        runtime_kind=kind,
+        project_id=loaded.project.id,
+        lifecycle=observed.lifecycle.value,
+        observed_units=observed.completed_units,
+        open_incidents=open_incidents,
+        latest_event=latest_event,
     )
-    if open_incidents:
-        incident = open_incidents[0]
-        console.print(
-            f"Current incident: {incident.incident_id} "
-            f"[{incident.status.value}] {incident.symptom}"
-        )
+
+
+@app.command("promote")
+def promote_desired(
+    contract: ContractPathOption = DEFAULT_CONTRACT_PATH,
+    state_dir: StateDirOption = DEFAULT_STATE_DIR,
+    runtime: Annotated[
+        str | None,
+        typer.Option("--runtime", help="Runtime adapter: file or failing-worker."),
+    ] = None,
+    source: Annotated[
+        str,
+        typer.Option(
+            "--from",
+            help="Promote desired deployment from repository, running, or a JSON file path.",
+        ),
+    ] = "repository",
+) -> None:
+    """Promote a fingerprint into desired deployment (explicit deployment intent)."""
+    state_path = _resolve(state_dir)
+    loaded = _load_contract_or_exit(contract, state_dir=state_path)
+    kind, runtime_adapter = _build_runtime(
+        contract=loaded,
+        state_dir=state_path,
+        runtime_kind=runtime if runtime in {"file", "failing-worker"} else None,  # type: ignore[arg-type]
+    )
+    observed = runtime_adapter.inspect()
+    if source in {"repository", "repo"}:
+        from research_harness.runtime.assessment import repository_fingerprint_for
+
+        repository = repository_fingerprint_for(runtime_adapter, state_dir=state_path)  # type: ignore[arg-type]
+        if repository is None:
+            console.print(
+                "[red]Repository fingerprint unavailable.[/red] "
+                "Implement repository_fingerprint() on the adapter or write "
+                f"{state_path / 'repository_fingerprint.json'}."
+            )
+            raise typer.Exit(code=1)
+        promoted = repository
+    elif source == "running":
+        promoted = dict(observed.fingerprint)
     else:
-        console.print("Current incident: none")
-    console.print(f"Completed: {observed.completed_units} / {loaded.validity.expected_units}")
-    if latest_event is None:
-        console.print("Ledger: no events recorded")
-    else:
-        console.print(
-            f"Ledger: latest event {latest_event.event_type.value} "
-            f"at {latest_event.recorded_at.isoformat()}"
+        source_path = _resolve(Path(source))
+        if not source_path.exists():
+            console.print(f"[red]Fingerprint file not found:[/red] {source_path}")
+            raise typer.Exit(code=1)
+        promoted = load_fingerprint_file(source_path)
+
+    desired_path = state_path / "desired_fingerprint.json"
+    write_fingerprint_file(desired_path, promoted)
+    assessment = assess_operation(
+        runtime=runtime_adapter,  # type: ignore[arg-type]
+        contract=loaded,
+        state_dir=state_path,
+        runtime_kind=kind,
+        observed=observed,
+    )
+    console.print(f"[green]Promoted desired deployment[/green] → {desired_path}")
+    console.print(
+        "Desired deployment: "
+        + _format_fingerprint_summary(
+            assessment.fingerprints.desired,
+            keys=_fingerprint_highlight_keys(loaded),
         )
+    )
+    console.print(f"Runtime freshness: {assessment.runtime_freshness.value}")
+    if assessment.reconciliation_required:
+        comparison = compare_fingerprints(
+            desired=assessment.fingerprints.desired,
+            observed=assessment.fingerprints.running,
+            fields=loaded.fingerprint.fields,
+        )
+        action = select_relaunch_action(loaded.fingerprint, comparison)
+        console.print(f"Reconciliation required — proposed action: {action or 'none'}")
 
 
 @app.command("reconcile")
@@ -354,14 +490,71 @@ def inspect_runtime(
         runtime_kind=runtime if runtime in {"file", "failing-worker"} else None,  # type: ignore[arg-type]
     )
     observed = runtime_adapter.inspect()
+    assessment = assess_operation(
+        runtime=runtime_adapter,  # type: ignore[arg-type]
+        contract=loaded,
+        state_dir=state_path,
+        runtime_kind=kind,
+        observed=observed,
+    )
     console.print(f"Project: {observed.project_id}")
     console.print(f"Runtime: {kind}")
     console.print(f"Lifecycle: {observed.lifecycle.value}")
-    console.print(f"Health: {observed.health.value}")
-    console.print(f"Progress: {observed.progress.value}")
-    console.print(f"Freshness: {observed.runtime_freshness.value}")
+    console.print(f"Runtime health: {assessment.runtime_health.value}")
+    console.print(f"Progress: {assessment.progress.value}")
+    console.print(f"Runtime freshness: {assessment.runtime_freshness.value}")
+    console.print(f"Inspection: {assessment.inspection.value}")
     console.print(f"Completed units: {observed.completed_units}")
-    console.print(f"Fingerprint: {fingerprint_digest(observed.fingerprint) or '(empty)'}")
+    console.print(
+        "Running fingerprint: "
+        + _format_fingerprint_summary(
+            assessment.fingerprints.running,
+            keys=_fingerprint_highlight_keys(loaded),
+        )
+    )
+
+
+@app.command("preflight")
+def mutation_preflight(
+    action: Annotated[str, typer.Argument(help="Contemplated mutation action.")],
+    contract: ContractPathOption = DEFAULT_CONTRACT_PATH,
+    state_dir: StateDirOption = DEFAULT_STATE_DIR,
+    runtime: Annotated[
+        str | None,
+        typer.Option("--runtime", help="Runtime adapter: file or failing-worker."),
+    ] = None,
+) -> None:
+    """Run project mutation preflight for a contemplated action."""
+    state_path = _resolve(state_dir)
+    loaded = _load_contract_or_exit(contract, state_dir=state_path)
+    kind, runtime_adapter = _build_runtime(
+        contract=loaded,
+        state_dir=state_path,
+        runtime_kind=runtime if runtime in {"file", "failing-worker"} else None,  # type: ignore[arg-type]
+    )
+    observed = runtime_adapter.inspect()
+    assessment = assess_operation(
+        runtime=runtime_adapter,  # type: ignore[arg-type]
+        contract=loaded,
+        state_dir=state_path,
+        runtime_kind=kind,
+        observed=observed,
+        mutation_action=action,
+    )
+    readiness = assessment.mutation
+    if readiness is None:
+        console.print("[red]Mutation preflight unavailable.[/red]")
+        raise typer.Exit(code=1)
+    console.print(f"Action: {readiness.action}")
+    console.print(f"Mutation readiness: {readiness.status.value}")
+    if readiness.reason:
+        console.print(f"Reason: {readiness.reason}")
+    for check in readiness.checks:
+        mark = "✓" if check.passed else "✗"
+        detail = f" — {check.detail}" if check.detail else ""
+        console.print(f"{mark} {check.name}{detail}")
+    if readiness.status.value != "READY":
+        raise typer.Exit(code=1)
 
 
 @app.command("incidents")

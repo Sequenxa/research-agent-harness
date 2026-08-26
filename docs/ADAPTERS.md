@@ -60,13 +60,57 @@ class MyProjectRuntime(RuntimeAdapter):
 
     def relaunch(self, action: str) -> None:
         # Apply graded relaunch: worker_restart | service_restart | full_relaunch | ...
+
+    def mutation_preflight(self, action: str) -> MutationReadiness:
+        # Project-specific safety gate before the harness mutates runtime.
+        # Example: native scheduler authorization rebuild, safe-window boundary.
+        checks = [
+            MutationPreflightCheck(name="authorization_rebuild", passed=False,
+                                   detail="authorization/source rebuild mismatch"),
+        ]
+        return MutationReadiness.blocked("full_relaunch", reason="...", checks=checks)
+
+    def repository_fingerprint(self) -> dict[str, str] | None:
+        # Optional: current repository/source manifest (may differ from running).
+        return {"git_sha": "...", "config_hash": "..."}
+```
+
+### Operational signals (orthogonal)
+
+Do not collapse native scheduler health into harness inspection health:
+
+| Signal | Question |
+|--------|----------|
+| `runtime_health` | Is the workload itself functioning? |
+| `progress` | Is scientific/operational work advancing? |
+| `runtime_freshness` | Is running == desired deployment? |
+| `inspection` | Can the harness observe state? |
+| `mutation_readiness` | Is a contemplated mutation safe right now? |
+
+Observe and diagnose are always permitted when inspection works. Plan remediation is permitted. **Mutate/relaunch** requires passing `mutation_preflight(action)` in addition to harness authority.
+
+```bash
+research-harness status
+research-harness preflight full_relaunch
+research-harness promote --from repository
 ```
 
 ### Fingerprint rules
 
-- **Observed fingerprint** = what the running system is actually using.
-- **Desired fingerprint** = what the contract/config says should be running.
-- If they differ, runtime is **stale** and reconciliation may relaunch (when `authority.runtime_restarts` allows).
+Three distinct fingerprints — do not collapse them:
+
+| Fingerprint | Meaning |
+|-------------|---------|
+| **Running** | What the live workload is actually using (`inspect().fingerprint`) |
+| **Desired deployment** | What the harness should reconcile toward (`desired_fingerprint.json` or explicit promotion) |
+| **Repository** | Current source tree / manifest (`repository_fingerprint()` or `repository_fingerprint.json`) |
+
+- **Runtime freshness** compares desired deployment vs running — not repository vs running.
+- Repository moving ahead of desired is normal during development and does **not** trigger reconciliation until you **promote**:
+  ```bash
+  research-harness promote --from repository
+  ```
+- If desired and running differ, runtime is **stale** and reconciliation may relaunch (when `authority.runtime_restarts` allows).
 
 Do not report pending config edits as the observed fingerprint. See the `failing_worker` fix: staged swaps stay stale until relaunch applies them.
 

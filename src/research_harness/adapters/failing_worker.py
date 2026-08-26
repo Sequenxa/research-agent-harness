@@ -13,6 +13,7 @@ from research_harness.adapters.base import (
     RuntimeAdapter,
 )
 from research_harness.models.enums import Health, Lifecycle, Progress, RuntimeFreshness
+from research_harness.models.mutation import MutationPreflightCheck, MutationReadiness
 from research_harness.models.state import ObservedState
 from research_harness.watchdog.evaluator import ProgressContext, WatermarkObservation
 
@@ -185,6 +186,38 @@ class FailingWorkerRuntime(RuntimeAdapter, CheckpointAdapter, DiagnosticsAdapter
                 "scientific_result_recorded": state.scientific_result_recorded,
             },
         )
+
+    def repository_fingerprint(self) -> dict[str, str]:
+        """Current repository/source manifest (may differ from running deployment)."""
+        config = self.store.load_config()
+        fingerprint = config.fingerprint()
+        state = self.store.load_state()
+        if state.pending_config_hash is not None:
+            fingerprint["config_hash"] = state.pending_config_hash
+        return fingerprint
+
+    def mutation_preflight(self, action: str) -> MutationReadiness:
+        running = self.inspect().fingerprint
+        repository = self.repository_fingerprint()
+        auth_ok = repository.get("config_hash") == running.get("config_hash")
+        checks = [
+            MutationPreflightCheck(
+                name="authorization_rebuild",
+                passed=auth_ok,
+                detail=(
+                    "source manifest matches running deployment"
+                    if auth_ok
+                    else "authorization/source rebuild mismatch"
+                ),
+            )
+        ]
+        if action in {"full_relaunch", "rebuild", "service_restart"} and not auth_ok:
+            return MutationReadiness.blocked(
+                action,
+                reason="authorization/source rebuild mismatch",
+                checks=checks,
+            )
+        return MutationReadiness.ready(action)
 
     def progress_context(self) -> ProgressContext:
         observed = self.inspect()

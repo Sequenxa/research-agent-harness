@@ -26,6 +26,21 @@ class RuntimeFreshness(StrEnum):
     STALE = "STALE"
 
 
+class InspectionStatus(StrEnum):
+    """Whether the harness can inspect runtime state."""
+
+    AVAILABLE = "AVAILABLE"
+    UNAVAILABLE = "UNAVAILABLE"
+
+
+class MutationReadinessStatus(StrEnum):
+    """Whether a contemplated runtime mutation is permitted now."""
+
+    READY = "READY"
+    BLOCKED = "BLOCKED"
+    WAIT = "WAIT"
+
+
 class IncidentStatus(StrEnum):
     NONE = "NONE"
     OPEN = "OPEN"

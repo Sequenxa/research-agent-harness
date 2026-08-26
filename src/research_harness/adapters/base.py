@@ -3,6 +3,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Any
 
+from research_harness.models.mutation import MutationReadiness
 from research_harness.models.state import ObservedState
 
 
@@ -20,6 +21,15 @@ class RuntimeAdapter(ABC):
     @abstractmethod
     def relaunch(self, action: str) -> None:
         """Apply a contract-declared relaunch action."""
+
+    def mutation_preflight(self, action: str) -> MutationReadiness:
+        """Project-specific safety gate before applying a mutation.
+
+        Override in project adapters to enforce native authorization,
+        safe-window boundaries, checkpoint preservation, etc.
+        Default: mutations are permitted when authority allows.
+        """
+        return MutationReadiness.ready(action)
 
 
 class CheckpointAdapter(ABC):

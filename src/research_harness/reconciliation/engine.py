@@ -3,9 +3,10 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 from research_harness.adapters.base import RuntimeAdapter
+from research_harness.budget import BudgetTracker
 from research_harness.contract.models import ProjectContract
 from research_harness.ledger import LedgerEventType, LedgerStore
-from research_harness.models.enums import RuntimeFreshness
+from research_harness.models.enums import MutationReadinessStatus, RuntimeFreshness
 from research_harness.models.state import (
     DesiredState,
     ObservedState,
@@ -17,7 +18,7 @@ from research_harness.runtime.fingerprint import (
     compare_fingerprints,
     select_relaunch_action,
 )
-from research_harness.budget import BudgetTracker
+from research_harness.runtime.mutation import mutation_preflight_for
 
 
 class Reconciler:
@@ -104,6 +105,16 @@ class Reconciler:
         if self.observe_only:
             result.actions_taken.append(f"would_{action}")
             self._record(result, desired=desired, observed=observed, action=action)
+            return result
+
+        preflight = mutation_preflight_for(self.runtime, action)
+        if preflight.status != MutationReadinessStatus.READY:
+            result.success = False
+            result.blocked_reason = (
+                preflight.reason
+                or f"Mutation preflight {preflight.status.value} for action={action}"
+            )
+            self._record(result, desired=desired, observed=observed, action=None)
             return result
 
         self.runtime.relaunch(action)
