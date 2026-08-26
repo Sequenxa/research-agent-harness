@@ -19,6 +19,7 @@ When implementing:
 - v0.1 adapters: `RuntimeAdapter`, `CheckpointAdapter`, `DiagnosticsAdapter` only
 - No web UI, K8s, Redis, or provider SDK in core for v0.1
 - Do not integrate into existing Sequenxa repos until the deterministic harness proves itself
+- Integration guide: [docs/ADAPTERS.md](docs/ADAPTERS.md)
 
 <!-- code-review-graph MCP tools -->
 ## MCP Tools: code-review-graph
