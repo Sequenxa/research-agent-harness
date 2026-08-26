@@ -15,24 +15,28 @@ class FakeWorker(RuntimeAdapter, CheckpointAdapter):
     def __init__(self, *, project_id: str, fingerprint: dict[str, str] | None = None) -> None:
         self.project_id = project_id
         self.fingerprint = dict(fingerprint or {})
+        self.pending_fingerprint: dict[str, str] | None = None
         self.running = True
         self.completed_units = 0
         self.last_progress_at = datetime.now(UTC)
         self.last_heartbeat_at = datetime.now(UTC)
         self._checkpoint: dict[str, Any] = {"completed_units": 0}
         self.restart_count = 0
+        self.failed_strategies: set[str] = set()
+        self.recovery_log: list[str] = []
 
     def inspect(self) -> ObservedState:
         health = Health.HEALTHY if self.running else Health.UNHEALTHY
         lifecycle = Lifecycle.RUNNING if self.running else Lifecycle.STOPPED
         progress = Progress.ADVANCING if self.running else Progress.STALLED
+        freshness = RuntimeFreshness.CURRENT
         return ObservedState(
             project_id=self.project_id,
             observed_at=datetime.now(UTC),
             lifecycle=lifecycle,
             health=health,
             progress=progress,
-            runtime_freshness=RuntimeFreshness.CURRENT,
+            runtime_freshness=freshness,
             fingerprint=dict(self.fingerprint),
             completed_units=self.completed_units,
             last_progress_at=self.last_progress_at,
@@ -56,6 +60,25 @@ class FakeWorker(RuntimeAdapter, CheckpointAdapter):
             }
         )
 
+    def set_pending_fingerprint(self, fingerprint: dict[str, str]) -> None:
+        self.pending_fingerprint = dict(fingerprint)
+
+    def apply_fingerprint(self, fingerprint: dict[str, str]) -> None:
+        self.fingerprint = dict(fingerprint)
+        self.running = True
+
+    def execute_recovery_strategy(self, strategy: str) -> bool:
+        self.recovery_log.append(strategy)
+        if strategy in self.failed_strategies:
+            return False
+        if strategy == "worker_restart":
+            self.restart_worker()
+            return True
+        if strategy in {"service_restart", "full_relaunch"}:
+            self.relaunch(strategy)
+            return True
+        return False
+
     def restart_worker(self) -> None:
         self.restart_count += 1
         self.running = True
@@ -66,6 +89,8 @@ class FakeWorker(RuntimeAdapter, CheckpointAdapter):
 
     def relaunch(self, action: str) -> None:
         del action
+        if self.pending_fingerprint is not None:
+            self.fingerprint = dict(self.pending_fingerprint)
         self.restart_worker()
 
     def latest_checkpoint(self) -> dict[str, Any] | None:
