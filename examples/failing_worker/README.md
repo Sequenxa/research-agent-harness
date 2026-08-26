@@ -2,40 +2,64 @@
 
 Deterministic fake research workload for harness development and demos.
 
-## What it does
+## Prerequisites
 
-- Processes numbered experiment units with checkpoints on disk
-- Exposes progress watermarks for the watchdog
-- Crashes at configured units (`crash_at_units`)
-- Stalls at configured units (`stall_at_units`)
-- Supports config swaps that require relaunch (`set_pending_config`)
-- Produces a cumulative effect-size metric for scientific outcome recording
-
-No LLM API required.
-
-## Quick start
+From the **repository root**, with [uv](https://docs.astral.sh/uv/) installed:
 
 ```bash
-export UV_PROJECT_ENVIRONMENT=/tmp/research-harness-venv
+export UV_PROJECT_ENVIRONMENT=/tmp/research-harness-venv  # external drive workaround
 uv sync --dev
-
-# Initialize worker state
-python examples/failing_worker/run.py init
-
-# Process units
-python examples/failing_worker/run.py step --count 5
-
-# Stage a config swap (harness reconcile applies it)
-python examples/failing_worker/run.py swap-config --config-hash cfg-b
-research-harness reconcile --state-dir examples/failing_worker/.state
 ```
 
-State files live under `examples/failing_worker/.state/`:
-- `config.json` — worker configuration and fingerprint fields
-- `worker_state.json` — runtime state
-- `checkpoint.json` — resume checkpoint
+Use `uv run` for all commands — `python` and `research-harness` are not on your PATH unless you activate the venv or install globally.
 
-## Harness integration
+## One-command demo
 
-Use `FailingWorkerRuntime` from `research_harness.adapters.failing_worker` as the
-`RuntimeAdapter` and `CheckpointAdapter` when driving this example from tests or the supervisor.
+```bash
+uv run python examples/failing_worker/run.py demo
+```
+
+This runs: `init` → process 10 units → stage config swap → harness reconcile.
+
+## Step by step
+
+```bash
+# Initialize worker state + contract.yaml
+uv run python examples/failing_worker/run.py init
+
+# Process units
+uv run python examples/failing_worker/run.py step --count 10
+
+# Stage config swap (runtime becomes stale until reconcile)
+uv run python examples/failing_worker/run.py swap-config --config-hash cfg-b
+
+# Apply relaunch via harness (uses FailingWorkerRuntime, not generic file adapter)
+uv run python examples/failing_worker/run.py reconcile
+
+# Inspect worker state
+uv run python examples/failing_worker/run.py status
+```
+
+## Main harness CLI
+
+The top-level CLI also works via `uv run`:
+
+```bash
+uv run research-harness init --contract examples/failing_worker/contract.yaml --id failing-worker --force
+uv run research-harness validate --contract examples/failing_worker/contract.yaml
+```
+
+For `failing_worker`, prefer `run.py reconcile` — it wires up `FailingWorkerRuntime` correctly. The generic `research-harness reconcile` command uses file-based fingerprint JSON and is for a different workflow.
+
+## State files
+
+Under `examples/failing_worker/.state/`:
+
+| File | Purpose |
+|------|---------|
+| `config.json` | Worker config and applied fingerprint fields |
+| `worker_state.json` | Runtime state (running, units, pending config) |
+| `checkpoint.json` | Resume checkpoint |
+| `ledger.db` | Reconciliation events |
+
+`contract.yaml` lives at `examples/failing_worker/contract.yaml`.

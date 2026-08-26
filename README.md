@@ -23,6 +23,21 @@ A code/configuration change is not completion. Completion means the intended sys
 
 Compared to Temporal/Prefect/Airflow: those handle durable execution and retries. This adds **semantic progress detection** and **verify-to-stable** — refusing to confuse "patch applied" with "system working."
 
+## Quick start
+
+```bash
+# From repo root — requires uv (https://docs.astral.sh/uv/)
+export UV_PROJECT_ENVIRONMENT=/tmp/research-harness-venv  # if on external drive
+uv sync --dev
+
+# Run the deterministic example end-to-end
+uv run python examples/failing_worker/run.py demo
+
+# Or use the harness CLI
+uv run research-harness init
+uv run research-harness validate
+```
+
 ## Planned Structure
 
 ```text

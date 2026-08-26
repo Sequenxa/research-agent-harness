@@ -48,7 +48,7 @@ def test_failing_worker_config_swap_is_stale_until_relaunch(tmp_path: Path) -> N
     runtime.set_pending_config("cfg-b")
     observed = runtime.inspect()
     assert observed.runtime_freshness.value == "STALE"
-    assert observed.fingerprint["config_hash"] == "cfg-b"
+    assert observed.fingerprint["config_hash"] == "cfg-a"
 
     runtime.relaunch("worker_restart")
     observed = runtime.inspect()

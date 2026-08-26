@@ -158,9 +158,6 @@ class FailingWorkerRuntime(RuntimeAdapter, CheckpointAdapter):
             else None
         )
         fingerprint = config.fingerprint()
-        if state.pending_config_hash is not None:
-            fingerprint = dict(fingerprint)
-            fingerprint["config_hash"] = state.pending_config_hash
         freshness = (
             RuntimeFreshness.STALE
             if state.pending_config_hash is not None
