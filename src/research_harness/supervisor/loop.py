@@ -201,13 +201,15 @@ class Supervisor:
         *,
         interval_seconds: float = 1.0,
         max_ticks: int | None = None,
-    ) -> None:
+    ) -> list[TickResult]:
         if not self._started:
             self.startup()
         ticks = 0
+        results: list[TickResult] = []
         try:
             while True:
                 result = self.tick()
+                results.append(result)
                 if result.stopped or result.completed:
                     break
                 ticks += 1
@@ -217,6 +219,7 @@ class Supervisor:
         finally:
             if self._started:
                 self.shutdown()
+        return results
 
     def doctor(self) -> DoctorReport:
         checks: list[str] = []

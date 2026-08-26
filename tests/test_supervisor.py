@@ -94,7 +94,25 @@ def test_cli_run_max_ticks(tmp_path: Path) -> None:
         ],
     )
     assert result.exit_code == 0, result.output
-    assert "Supervisor stopped" in result.output
+    assert "Supervisor stopped after" in result.output
+
+
+def test_cli_doctor_discovers_contract_beside_state_dir(tmp_path: Path) -> None:
+    contract_path, state_dir = _init_failing_worker(tmp_path)
+    # doctor without --contract should find contract.yaml next to state dir
+    doctor = runner.invoke(
+        app,
+        [
+            "doctor",
+            "--state-dir",
+            str(state_dir),
+            "--runtime",
+            "failing-worker",
+        ],
+    )
+    assert doctor.exit_code == 0, doctor.output
+    assert "Doctor: ok" in doctor.output
+    assert str(contract_path.parent) in doctor.output or "state_dir ok" in doctor.output
 
 
 def test_cli_doctor_and_stop(tmp_path: Path) -> None:

@@ -51,12 +51,41 @@ def _resolve(path: Path) -> Path:
     return path.expanduser().resolve()
 
 
-def _load_contract_or_exit(contract_path: Path) -> ProjectContract:
-    if not contract_path.exists():
-        console.print(f"[red]Contract not found:[/red] {contract_path}")
+def _resolve_contract_path(contract: Path, state_dir: Path) -> Path:
+    """Resolve contract path, inferring from state_dir when default is missing."""
+    resolved = _resolve(contract)
+    if resolved.exists():
+        return resolved
+    if contract != DEFAULT_CONTRACT_PATH:
+        return resolved
+    state_path = _resolve(state_dir)
+    for candidate in (state_path.parent / "contract.yaml", state_path / "contract.yaml"):
+        if candidate.exists():
+            return candidate.resolve()
+    return resolved
+
+
+def _resolve_ledger_path(ledger: Path, state_dir: Path) -> Path:
+    """Use state_dir/ledger.db when the default ledger path was not overridden."""
+    if ledger != DEFAULT_LEDGER_PATH:
+        return _resolve(ledger)
+    return _resolve(state_dir) / "ledger.db"
+
+
+def _load_contract_or_exit(contract_path: Path, *, state_dir: Path | None = None) -> ProjectContract:
+    path = (
+        _resolve_contract_path(contract_path, state_dir)
+        if state_dir is not None
+        else _resolve(contract_path)
+    )
+    if not path.exists():
+        console.print(f"[red]Contract not found:[/red] {path}")
+        console.print(
+            "Pass --contract explicitly, or place contract.yaml beside --state-dir."
+        )
         raise typer.Exit(code=1)
     try:
-        return load_contract(contract_path)
+        return load_contract(path)
     except ValidationError as error:
         console.print(format_validation_error(error))
         raise typer.Exit(code=1) from error
@@ -132,8 +161,8 @@ def project_status(
     ] = None,
 ) -> None:
     """Show current project status from contract, runtime, and ledger."""
-    loaded = _load_contract_or_exit(_resolve(contract))
     state_path = _resolve(state_dir)
+    loaded = _load_contract_or_exit(contract, state_dir=state_path)
     kind, runtime_adapter = _build_runtime(
         contract=loaded,
         state_dir=state_path,
@@ -151,7 +180,7 @@ def project_status(
         fields=loaded.fingerprint.fields,
     )
 
-    ledger_path = _resolve(ledger)
+    ledger_path = _resolve_ledger_path(ledger, state_path)
     latest_event = None
     if ledger_path.exists():
         store = LedgerStore(ledger_path)
@@ -268,15 +297,16 @@ def run_supervisor(
     ] = None,
 ) -> None:
     """Start the reconciliation supervisor loop."""
-    loaded = _load_contract_or_exit(_resolve(contract))
     state_path = _resolve(state_dir)
     state_path.mkdir(parents=True, exist_ok=True)
+    loaded = _load_contract_or_exit(contract, state_dir=state_path)
+    ledger_path = _resolve_ledger_path(ledger, state_path)
     kind, runtime_adapter = _build_runtime(
         contract=loaded,
         state_dir=state_path,
         runtime_kind=runtime if runtime in {"file", "failing-worker"} else None,  # type: ignore[arg-type]
     )
-    store = LedgerStore(_resolve(ledger))
+    store = LedgerStore(ledger_path)
     supervisor = Supervisor(
         contract=loaded,
         runtime=runtime_adapter,  # type: ignore[arg-type]
@@ -285,11 +315,20 @@ def run_supervisor(
         runtime_kind=kind,
     )
     try:
-        supervisor.run(interval_seconds=interval, max_ticks=max_ticks)
+        results = supervisor.run(interval_seconds=interval, max_ticks=max_ticks)
     except RuntimeError as error:
         console.print(f"[red]{error}[/red]")
         raise typer.Exit(code=1) from error
-    console.print("[green]Supervisor stopped.[/green]")
+    for index, tick in enumerate(results, start=1):
+        action_summary = ", ".join(tick.actions) if tick.actions else "noop"
+        console.print(
+            f"tick {index}: lifecycle={tick.observed.lifecycle.value} "
+            f"health={tick.observed.health.value} "
+            f"units={tick.observed.completed_units} actions={action_summary}"
+        )
+        if tick.message:
+            console.print(f"  {tick.message}")
+    console.print(f"[green]Supervisor stopped after {len(results)} tick(s).[/green]")
 
 
 @app.command("inspect")
@@ -302,8 +341,8 @@ def inspect_runtime(
     ] = None,
 ) -> None:
     """Inspect observed runtime state."""
-    loaded = _load_contract_or_exit(_resolve(contract))
     state_path = _resolve(state_dir)
+    loaded = _load_contract_or_exit(contract, state_dir=state_path)
     kind, runtime_adapter = _build_runtime(
         contract=loaded,
         state_dir=state_path,
@@ -326,8 +365,9 @@ def list_incidents(
     state_dir: StateDirOption = DEFAULT_STATE_DIR,
 ) -> None:
     """List open incidents for the project."""
-    loaded = _load_contract_or_exit(_resolve(contract))
-    store = IncidentStore(_resolve(state_dir) / "incidents.db")
+    state_path = _resolve(state_dir)
+    loaded = _load_contract_or_exit(contract, state_dir=state_path)
+    store = IncidentStore(state_path / "incidents.db")
     open_incidents = store.list_open(project_id=loaded.project.id)
     if not open_incidents:
         console.print("No open incidents.")
@@ -350,8 +390,9 @@ def doctor(
     ] = None,
 ) -> None:
     """Check local harness health."""
-    loaded = _load_contract_or_exit(_resolve(contract))
     state_path = _resolve(state_dir)
+    loaded = _load_contract_or_exit(contract, state_dir=state_path)
+    ledger_path = _resolve_ledger_path(ledger, state_path)
     kind, runtime_adapter = _build_runtime(
         contract=loaded,
         state_dir=state_path,
@@ -361,7 +402,7 @@ def doctor(
         contract=loaded,
         runtime=runtime_adapter,  # type: ignore[arg-type]
         state_dir=state_path,
-        ledger=LedgerStore(_resolve(ledger)),
+        ledger=LedgerStore(ledger_path),
         runtime_kind=kind,
     )
     report = supervisor.doctor()
