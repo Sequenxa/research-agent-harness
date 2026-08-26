@@ -1,30 +1,55 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Literal
+from typing import Any
 
 from research_harness.adapters.base import RuntimeAdapter
 from research_harness.adapters.failing_worker import FailingWorkerRuntime
 from research_harness.adapters.file_runtime import FileRuntimeAdapter
 from research_harness.runtime.io import load_fingerprint_file
+from research_harness.runtime.loader import (
+    RuntimeLoadRequest,
+    load_runtime_from_entrypoint,
+    resolve_entrypoint_target,
+)
 from research_harness.watchdog import ProgressContext
 
-RuntimeKind = Literal["file", "failing-worker"]
+RuntimeKind = str
+
+
+def create_failing_worker_runtime(
+    *,
+    project_id: str,
+    state_dir: Path,
+    **options: Any,
+) -> RuntimeAdapter:
+    del options
+    return FailingWorkerRuntime(project_id=project_id, state_dir=state_dir)
 
 
 def create_runtime(
     *,
-    kind: RuntimeKind,
+    request: RuntimeLoadRequest,
     project_id: str,
     state_dir: Path,
     pending_desired: dict[str, str] | None = None,
 ) -> RuntimeAdapter:
-    if kind == "failing-worker":
-        return FailingWorkerRuntime(project_id=project_id, state_dir=state_dir)
-    return FileRuntimeAdapter(
+    """Load a runtime adapter from built-ins, entry points, or explicit factories."""
+    label = request.label
+    if label == "failing-worker":
+        return create_failing_worker_runtime(project_id=project_id, state_dir=state_dir)
+    if label == "file":
+        return FileRuntimeAdapter(
+            project_id=project_id,
+            state_dir=state_dir,
+            pending_desired=pending_desired,
+        )
+    target = request.entrypoint or resolve_entrypoint_target(label=label)
+    return load_runtime_from_entrypoint(
+        target,
         project_id=project_id,
         state_dir=state_dir,
-        pending_desired=pending_desired,
+        options=request.options,
     )
 
 
@@ -70,7 +95,7 @@ def desired_fingerprint_for(
     desired_path = state_dir / "desired_fingerprint.json"
     if desired_path.exists():
         return load_fingerprint_file(desired_path)
-    if runtime_kind == "failing-worker" and isinstance(runtime, FailingWorkerRuntime):
+    if isinstance(runtime, FailingWorkerRuntime):
         state = runtime.store.load_state()
         running = dict(runtime.inspect().fingerprint)
         if state.pending_config_hash is not None:

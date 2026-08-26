@@ -4,7 +4,6 @@ import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Literal
 from uuid import uuid4
 
 from research_harness.adapters.base import RuntimeAdapter
@@ -30,7 +29,7 @@ from research_harness.supervisor.runtime_factory import (
 )
 from research_harness.supervisor.stop import clear_stop, stop_requested
 
-RuntimeKind = Literal["file", "failing-worker"]
+RuntimeKind = str
 ACTION_COST_USD = 0.10
 
 

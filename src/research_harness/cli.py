@@ -21,9 +21,13 @@ from research_harness.runtime.fingerprint import (
     select_relaunch_action,
 )
 from research_harness.runtime.io import load_fingerprint_file, write_fingerprint_file
+from research_harness.runtime.loader import (
+    BUILTIN_RUNTIMES,
+    list_registered_runtimes,
+    resolve_runtime_load_request,
+)
 from research_harness.runtime.mutation import remediate_preflight
 from research_harness.supervisor import Supervisor, request_stop
-from research_harness.supervisor.loop import RuntimeKind
 from research_harness.supervisor.runtime_factory import create_runtime
 
 app = typer.Typer(
@@ -31,6 +35,8 @@ app = typer.Typer(
     help="Reconciliation controller for research execution.",
     no_args_is_help=True,
 )
+runtimes_app = typer.Typer(help="Discover project runtime adapters.")
+app.add_typer(runtimes_app, name="runtimes")
 console = Console()
 
 DEFAULT_CONTRACT_PATH = Path("contract.yaml")
@@ -50,6 +56,20 @@ LedgerPathOption = Annotated[
 StateDirOption = Annotated[
     Path,
     typer.Option("--state-dir", help="Directory for local runtime fingerprint state."),
+]
+RuntimeOption = Annotated[
+    str | None,
+    typer.Option(
+        "--runtime",
+        help="Built-in (file, failing-worker), registered plugin name, or module:callable.",
+    ),
+]
+RuntimeEntrypointOption = Annotated[
+    str | None,
+    typer.Option(
+        "--runtime-entrypoint",
+        help="Explicit module:callable runtime factory (overrides --runtime).",
+    ),
 ]
 
 
@@ -100,7 +120,7 @@ def _load_contract_or_exit(contract_path: Path, *, state_dir: Path | None = None
         raise typer.Exit(code=1) from error
 
 
-def _detect_runtime_kind(state_dir: Path) -> RuntimeKind:
+def _detect_runtime_kind(state_dir: Path) -> str:
     if (state_dir / "worker_state.json").exists():
         return "failing-worker"
     return "file"
@@ -110,18 +130,48 @@ def _build_runtime(
     *,
     contract: ProjectContract,
     state_dir: Path,
-    runtime_kind: RuntimeKind | None = None,
-) -> tuple[RuntimeKind, object]:
-    kind = runtime_kind or _detect_runtime_kind(state_dir)
+    runtime: str | None = None,
+    entrypoint: str | None = None,
+) -> tuple[str, object]:
+    request = resolve_runtime_load_request(
+        runtime=runtime,
+        entrypoint=entrypoint,
+        contract_runtime_loader=contract.runtime_loader,
+        state_dir=state_dir,
+    )
     desired_path = state_dir / "desired_fingerprint.json"
     pending_desired = load_fingerprint_file(desired_path) if desired_path.exists() else None
-    runtime = create_runtime(
-        kind=kind,
-        project_id=contract.project.id,
-        state_dir=state_dir,
-        pending_desired=pending_desired,
-    )
-    return kind, runtime
+    try:
+        runtime_adapter = create_runtime(
+            request=request,
+            project_id=contract.project.id,
+            state_dir=state_dir,
+            pending_desired=pending_desired,
+        )
+    except (ImportError, TypeError, ValueError) as error:
+        console.print(f"[red]Failed to load runtime:[/red] {error}")
+        raise typer.Exit(code=1) from error
+    if request.entrypoint:
+        label = f"entrypoint:{request.entrypoint}"
+    else:
+        label = request.label
+    return label, runtime_adapter
+
+
+@runtimes_app.command("list")
+def list_runtimes() -> None:
+    """List built-in and entry-point-registered runtime adapters."""
+    console.print("[bold]Built-in runtimes[/bold]")
+    for name in sorted(BUILTIN_RUNTIMES):
+        console.print(f"  {name}")
+    registered = list_registered_runtimes()
+    if not registered:
+        console.print("\n[bold]Registered runtimes[/bold]")
+        console.print("  (none — projects register via [research_harness.runtimes] entry points)")
+        return
+    console.print("\n[bold]Registered runtimes[/bold]")
+    for runtime in registered:
+        console.print(f"  {runtime.name} -> {runtime.entrypoint}")
 
 
 def _fingerprint_highlight_keys(contract: ProjectContract) -> list[str]:
@@ -237,10 +287,8 @@ def project_status(
     contract: ContractPathOption = DEFAULT_CONTRACT_PATH,
     ledger: LedgerPathOption = DEFAULT_LEDGER_PATH,
     state_dir: StateDirOption = DEFAULT_STATE_DIR,
-    runtime: Annotated[
-        str | None,
-        typer.Option("--runtime", help="Runtime adapter: file or failing-worker."),
-    ] = None,
+    runtime: RuntimeOption = None,
+    entrypoint: RuntimeEntrypointOption = None,
 ) -> None:
     """Show current project status from contract, runtime, and ledger."""
     state_path = _resolve(state_dir)
@@ -248,7 +296,8 @@ def project_status(
     kind, runtime_adapter = _build_runtime(
         contract=loaded,
         state_dir=state_path,
-        runtime_kind=runtime if runtime in {"file", "failing-worker"} else None,  # type: ignore[arg-type]
+        runtime=runtime,
+        entrypoint=entrypoint,
     )
     observed = runtime_adapter.inspect()
     assessment = assess_operation(
@@ -284,10 +333,8 @@ def project_status(
 def promote_desired(
     contract: ContractPathOption = DEFAULT_CONTRACT_PATH,
     state_dir: StateDirOption = DEFAULT_STATE_DIR,
-    runtime: Annotated[
-        str | None,
-        typer.Option("--runtime", help="Runtime adapter: file or failing-worker."),
-    ] = None,
+    runtime: RuntimeOption = None,
+    entrypoint: RuntimeEntrypointOption = None,
     source: Annotated[
         str,
         typer.Option(
@@ -302,7 +349,8 @@ def promote_desired(
     kind, runtime_adapter = _build_runtime(
         contract=loaded,
         state_dir=state_path,
-        runtime_kind=runtime if runtime in {"file", "failing-worker"} else None,  # type: ignore[arg-type]
+        runtime=runtime,
+        entrypoint=entrypoint,
     )
     observed = runtime_adapter.inspect()
     if source in {"repository", "repo"}:
@@ -420,10 +468,8 @@ def run_supervisor(
     contract: ContractPathOption = DEFAULT_CONTRACT_PATH,
     ledger: LedgerPathOption = DEFAULT_LEDGER_PATH,
     state_dir: StateDirOption = DEFAULT_STATE_DIR,
-    runtime: Annotated[
-        str | None,
-        typer.Option("--runtime", help="Runtime adapter: file or failing-worker."),
-    ] = None,
+    runtime: RuntimeOption = None,
+    entrypoint: RuntimeEntrypointOption = None,
     interval: Annotated[
         float,
         typer.Option("--interval", help="Seconds between reconciliation ticks."),
@@ -445,7 +491,8 @@ def run_supervisor(
     kind, runtime_adapter = _build_runtime(
         contract=loaded,
         state_dir=state_path,
-        runtime_kind=runtime if runtime in {"file", "failing-worker"} else None,  # type: ignore[arg-type]
+        runtime=runtime,
+        entrypoint=entrypoint,
     )
     store = LedgerStore(ledger_path)
     supervisor = Supervisor(
@@ -477,10 +524,8 @@ def run_supervisor(
 def inspect_runtime(
     contract: ContractPathOption = DEFAULT_CONTRACT_PATH,
     state_dir: StateDirOption = DEFAULT_STATE_DIR,
-    runtime: Annotated[
-        str | None,
-        typer.Option("--runtime", help="Runtime adapter: file or failing-worker."),
-    ] = None,
+    runtime: RuntimeOption = None,
+    entrypoint: RuntimeEntrypointOption = None,
 ) -> None:
     """Inspect observed runtime state."""
     state_path = _resolve(state_dir)
@@ -488,7 +533,8 @@ def inspect_runtime(
     kind, runtime_adapter = _build_runtime(
         contract=loaded,
         state_dir=state_path,
-        runtime_kind=runtime if runtime in {"file", "failing-worker"} else None,  # type: ignore[arg-type]
+        runtime=runtime,
+        entrypoint=entrypoint,
     )
     observed = runtime_adapter.inspect()
     assessment = assess_operation(
@@ -520,10 +566,8 @@ def mutation_preflight(
     action: Annotated[str, typer.Argument(help="Contemplated mutation action.")],
     contract: ContractPathOption = DEFAULT_CONTRACT_PATH,
     state_dir: StateDirOption = DEFAULT_STATE_DIR,
-    runtime: Annotated[
-        str | None,
-        typer.Option("--runtime", help="Runtime adapter: file or failing-worker."),
-    ] = None,
+    runtime: RuntimeOption = None,
+    entrypoint: RuntimeEntrypointOption = None,
     repair: Annotated[
         bool,
         typer.Option(
@@ -538,7 +582,8 @@ def mutation_preflight(
     kind, runtime_adapter = _build_runtime(
         contract=loaded,
         state_dir=state_path,
-        runtime_kind=runtime if runtime in {"file", "failing-worker"} else None,  # type: ignore[arg-type]
+        runtime=runtime,
+        entrypoint=entrypoint,
     )
     if repair:
         remediation = remediate_preflight(runtime_adapter, action)  # type: ignore[arg-type]
@@ -602,10 +647,8 @@ def doctor(
     contract: ContractPathOption = DEFAULT_CONTRACT_PATH,
     ledger: LedgerPathOption = DEFAULT_LEDGER_PATH,
     state_dir: StateDirOption = DEFAULT_STATE_DIR,
-    runtime: Annotated[
-        str | None,
-        typer.Option("--runtime", help="Runtime adapter: file or failing-worker."),
-    ] = None,
+    runtime: RuntimeOption = None,
+    entrypoint: RuntimeEntrypointOption = None,
 ) -> None:
     """Check local harness health."""
     state_path = _resolve(state_dir)
@@ -614,7 +657,8 @@ def doctor(
     kind, runtime_adapter = _build_runtime(
         contract=loaded,
         state_dir=state_path,
-        runtime_kind=runtime if runtime in {"file", "failing-worker"} else None,  # type: ignore[arg-type]
+        runtime=runtime,
+        entrypoint=entrypoint,
     )
     supervisor = Supervisor(
         contract=loaded,

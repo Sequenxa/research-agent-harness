@@ -14,6 +14,9 @@ dependencies = [
 [project.scripts]
 research-harness = "research_harness.cli:app"
 
+[project.entry-points."research_harness.runtimes"]
+failing-worker = "research_harness.supervisor.runtime_factory:create_failing_worker_runtime"
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"

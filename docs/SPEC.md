@@ -338,6 +338,17 @@ SchedulerAdapter | EvaluatorAdapter
 
 Provide simple local adapters and fake adapters for testing. Do not implement dozens of providers in v0.1.
 
+### Generic runtime loader (harness core)
+
+The harness — not external repos — owns runtime discovery and loading:
+
+- **Built-in:** `file`, `failing-worker`
+- **Entry points:** `[project.entry-points."research_harness.runtimes"]`
+- **Contract hook:** optional `runtime_loader.plugin` or `runtime_loader.entrypoint`
+- **CLI:** `--runtime <name|module:callable>`, `--runtime-entrypoint module:callable`, `research-harness runtimes list`
+
+External projects register a `create_runtime(project_id, state_dir, **options) -> RuntimeAdapter` factory. Policy-simulation-eval and similar repos are **consumers**, not loader implementers.
+
 ---
 
 ## Section 14 — Supervisor

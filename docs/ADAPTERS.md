@@ -203,7 +203,47 @@ Key sections for adapters:
 
 ## Wiring into the harness
 
-Today (v0.1), you compose modules explicitly:
+### Register your runtime (recommended)
+
+Projects register a factory via Python entry points. The harness discovers them; your repo only provides adapters.
+
+**In your project's `pyproject.toml`:**
+
+```toml
+[project.entry-points."research_harness.runtimes"]
+policy-simulation-eval = "policy_eval.harness:create_runtime"
+```
+
+**Factory signature:**
+
+```python
+def create_runtime(*, project_id: str, state_dir: Path, **options) -> RuntimeAdapter:
+    return PolicySimulationHarness(project_id=project_id, state_dir=state_dir)
+```
+
+**In `contract.yaml` (optional — avoids repeating CLI flags):**
+
+```yaml
+runtime_loader:
+  plugin: policy-simulation-eval
+  # or explicit:
+  # entrypoint: policy_eval.harness:create_runtime
+  options: {}
+```
+
+**CLI usage:**
+
+```bash
+research-harness runtimes list
+research-harness --runtime policy-simulation-eval status
+research-harness --runtime-entrypoint policy_eval.harness:create_runtime preflight full_relaunch
+```
+
+Resolution order: `--runtime-entrypoint` → `contract.runtime_loader` → `--runtime` → auto-detect (`file` / `failing-worker`).
+
+### Compose modules explicitly (advanced)
+
+Today (v0.1), you can also compose modules explicitly:
 
 ```python
 from research_harness.reconciliation import Reconciler

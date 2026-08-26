@@ -349,6 +349,20 @@ class EscalationConfig(BaseModel):
         return value
 
 
+class RuntimeLoaderConfig(BaseModel):
+    """How the harness loads this project's RuntimeAdapter."""
+
+    plugin: str | None = Field(
+        default=None,
+        description="Registered entry point name (research_harness.runtimes group).",
+    )
+    entrypoint: str | None = Field(
+        default=None,
+        description="Explicit module:callable runtime factory.",
+    )
+    options: dict[str, Any] = Field(default_factory=dict)
+
+
 class ProjectContract(BaseModel):
     """Enhanced project contract schema v1.1."""
 
@@ -364,6 +378,7 @@ class ProjectContract(BaseModel):
     verification: VerificationConfig
     completion: CompletionConfig
     escalation: EscalationConfig
+    runtime_loader: RuntimeLoaderConfig | None = None
 
     @field_validator("contract_version")
     @classmethod
