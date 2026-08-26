@@ -6,7 +6,7 @@ A reconciliation controller for research execution — not another generic auton
 
 ## Status
 
-**Slice 1–4 complete.** Phase 4 adds recovery budgets, verification burn-in, remediation intents, project lease, and acceptance scenarios A–E. See [docs/SPEC.md](docs/SPEC.md).
+**Slice 1–5 complete.** Phase 5 adds the `failing_worker` example, scientific result recording, and acceptance scenario F. See [docs/SPEC.md](docs/SPEC.md).
 
 ## Core Principle
 

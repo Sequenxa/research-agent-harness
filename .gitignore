@@ -12,6 +12,7 @@ build/
 # Harness runtime state
 .research-harness/
 contract.yaml
+examples/failing_worker/.state/
 
 # IDE
 .idea/

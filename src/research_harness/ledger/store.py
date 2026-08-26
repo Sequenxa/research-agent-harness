@@ -25,6 +25,7 @@ class LedgerEventType(StrEnum):
     PROVIDER_SWAP = "provider_swap"
     BUDGET = "budget"
     COMPLETION = "completion"
+    SCIENTIFIC_RESULT = "scientific_result"
 
 
 @dataclass(frozen=True)
