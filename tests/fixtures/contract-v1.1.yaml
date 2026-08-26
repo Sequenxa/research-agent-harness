@@ -1,0 +1,110 @@
+contract_version: 1
+
+project:
+  id: policy-simulation-eval
+  objective: Determine whether X affects Y.
+
+invariants:
+  - id: sealed-labels
+    statement: Producer agents cannot read evaluator labels.
+    check: fs_acl.sealed_paths_unreadable_by_worker
+    on_violation: halt
+
+fingerprint:
+  fields:
+    - git_sha
+    - lock_hash
+    - model
+    - provider
+    - prompt_version
+    - dataset_version
+    - evaluator_version
+    - config_hash
+  on_change:
+    prompt_version: worker_restart
+    config_hash: worker_restart
+    lock_hash: rebuild
+    model: full_relaunch
+    git_sha: full_relaunch
+  default: full_relaunch
+
+progress:
+  watermarks:
+    - name: completed_units
+      source: ledger
+      stall_after: 20m
+    - name: worker_heartbeat
+      source: adapter
+      stall_after: 90s
+  phases:
+    dataset_load:
+      stall_after: 45m
+    warmup:
+      stall_after: 15m
+  slow_operation_grace: 60m
+  stall_requires: any
+
+validity:
+  expected_units: 1000
+  max_null_rate: 0.02
+  max_error_rate: 0.05
+  require_fingerprint_match: true
+  checks:
+    - id: shard_count
+      adapter: dataset
+      on_fail: incident
+    - id: score_distribution_drift
+      adapter: evaluator
+      on_fail: block
+  on_invalid: quarantine
+
+authority:
+  code_changes:
+    allow:
+      - src/workers/**
+      - configs/**
+    deny:
+      - src/evaluator/**
+      - data/**
+  dependency_changes: patch_only
+  model_swaps:
+    allow:
+      - gpt-4o-mini
+      - claude-haiku-4-5
+  provider_swaps: true
+  runtime_restarts: true
+  architecture_changes: false
+
+budget:
+  total_usd: 100
+  per_hour_usd: 15
+  per_incident_usd: 5
+  per_incident_wallclock: 30m
+  warn_at: 0.7
+
+recovery:
+  max_identical_attempts: 2
+  max_attempts_per_incident: 6
+  detect_oscillation: true
+  oscillation_window: 4
+  backoff: exponential
+  min_backoff: 30s
+  novel_strategy_requires: evidence_delta
+
+verification:
+  smoke_test: required
+  stable_after:
+    units: 5
+    min_duration: 10m
+    no_recurrence_within: 30m
+
+completion:
+  condition: units_completed >= 1000 and validity.passed
+  on_complete:
+    - snapshot_ledger
+    - stop_workers
+
+escalation:
+  channel: file
+  blocking_timeout: 24h
+  on_timeout: stop

@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+dist/
+build/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+
+# Harness runtime state
+.research-harness/
+contract.yaml
+
+# IDE
+.idea/
+.vscode/
+
+# macOS AppleDouble sidecars on external volumes
+._*
