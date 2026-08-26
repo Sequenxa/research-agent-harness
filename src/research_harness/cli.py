@@ -7,7 +7,6 @@ import typer
 from pydantic import ValidationError
 from rich.console import Console
 
-from research_harness.adapters.file_runtime import FileRuntimeAdapter
 from research_harness.contract.loader import format_validation_error, load_contract, write_contract
 from research_harness.contract.models import ProjectContract
 from research_harness.contract.template import default_contract
@@ -407,6 +406,8 @@ def reconcile_once(
     contract: ContractPathOption = DEFAULT_CONTRACT_PATH,
     ledger: LedgerPathOption = DEFAULT_LEDGER_PATH,
     state_dir: StateDirOption = DEFAULT_STATE_DIR,
+    runtime: RuntimeOption = None,
+    entrypoint: RuntimeEntrypointOption = None,
     desired: Annotated[
         Path | None,
         typer.Option("--desired", help="JSON file with desired fingerprint fields."),
@@ -417,8 +418,10 @@ def reconcile_once(
     ] = None,
 ) -> None:
     """Run one reconciliation pass against local fingerprint state."""
-    loaded = _load_contract_or_exit(_resolve(contract))
     state_path = _resolve(state_dir)
+    state_path.mkdir(parents=True, exist_ok=True)
+    loaded = _load_contract_or_exit(contract, state_dir=state_path)
+    ledger_path = _resolve_ledger_path(ledger, state_path)
     desired_path = _resolve(desired) if desired else state_path / "desired_fingerprint.json"
     observed_path = _resolve(observed) if observed else state_path / "observed_fingerprint.json"
 
@@ -434,19 +437,28 @@ def reconcile_once(
         # Seed observed from empty/missing as fully stale {}.
         write_fingerprint_file(observed_path, {})
 
-    runtime = FileRuntimeAdapter(
-        project_id=loaded.project.id,
+    _kind, runtime_adapter = _build_runtime(
+        contract=loaded,
         state_dir=state_path,
-        pending_desired=desired_fp,
+        runtime=runtime,
+        entrypoint=entrypoint,
     )
-    # Ensure observed path used by adapter matches CLI path when custom.
-    if observed is not None:
-        runtime.observed_path = observed_path
+    observed_path_attr = getattr(runtime_adapter, "observed_path", None)
+    if observed_path_attr is not None:
+        runtime_adapter.observed_path = observed_path  # type: ignore[attr-defined]
         if not observed_path.exists():
             write_fingerprint_file(observed_path, {})
+    setter = getattr(runtime_adapter, "set_pending_desired", None)
+    if callable(setter):
+        setter(desired_fp)
 
-    store = LedgerStore(_resolve(ledger))
-    reconciler = Reconciler(contract=loaded, runtime=runtime, ledger=store)
+    store = LedgerStore(ledger_path)
+    reconciler = Reconciler(
+        contract=loaded,
+        runtime=runtime_adapter,  # type: ignore[arg-type]
+        ledger=store,
+        persist_desired_path=desired_path,
+    )
     result = reconciler.reconcile(desired_fingerprint=desired_fp)
 
     if result.success and not result.differences:

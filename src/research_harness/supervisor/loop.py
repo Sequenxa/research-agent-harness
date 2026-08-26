@@ -86,6 +86,7 @@ class Supervisor:
             ledger=ledger,
             observe_only=observe_only,
         )
+        desired_path = self.state_dir / "desired_fingerprint.json"
         self.reconciler = Reconciler(
             contract=contract,
             runtime=runtime,
@@ -93,6 +94,7 @@ class Supervisor:
             observe_only=observe_only,
             budget_tracker=self.budget,
             action_cost_usd=ACTION_COST_USD,
+            persist_desired_path=desired_path if desired_path.exists() else None,
         )
         self._started = False
 

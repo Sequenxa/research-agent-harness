@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from pathlib import Path
 
 from research_harness.adapters.base import RuntimeAdapter
 from research_harness.budget import BudgetTracker
@@ -14,11 +15,15 @@ from research_harness.models.state import (
     ReconciliationDifference,
     ReconciliationResult,
 )
-from research_harness.runtime.desired import build_desired_state
+from research_harness.runtime.desired import (
+    build_desired_state,
+    merge_repository_deployment_fields,
+)
 from research_harness.runtime.fingerprint import (
     compare_fingerprints,
     select_relaunch_action,
 )
+from research_harness.runtime.io import write_fingerprint_file
 from research_harness.runtime.mutation import remediate_preflight
 
 
@@ -34,6 +39,7 @@ class Reconciler:
         observe_only: bool = False,
         budget_tracker: BudgetTracker | None = None,
         action_cost_usd: float = 0.10,
+        persist_desired_path: Path | None = None,
     ) -> None:
         self.contract = contract
         self.runtime = runtime
@@ -41,6 +47,7 @@ class Reconciler:
         self.observe_only = observe_only
         self.budget_tracker = budget_tracker
         self.action_cost_usd = action_cost_usd
+        self.persist_desired_path = persist_desired_path
 
     def reconcile(self, *, desired_fingerprint: dict[str, str]) -> ReconciliationResult:
         desired = build_desired_state(self.contract, fingerprint_fields=desired_fingerprint)
@@ -127,6 +134,8 @@ class Reconciler:
         remediation = remediate_preflight(self.runtime, action)
         for repair_id in remediation.repairs_applied:
             result.actions_taken.append(f"repair:{repair_id}")
+        if remediation.repairs_applied:
+            desired = self._sync_desired_after_repairs(desired, result)
         if remediation.final.status != MutationReadinessStatus.READY:
             result.success = False
             result.blocked_reason = (
@@ -158,6 +167,31 @@ class Reconciler:
 
         self._record(result, desired=desired, observed=post, action=action)
         return result
+
+    def _sync_desired_after_repairs(
+        self,
+        desired: DesiredState,
+        result: ReconciliationResult,
+    ) -> DesiredState:
+        synced_fp, synced_fields = merge_repository_deployment_fields(
+            self.runtime,
+            desired.fingerprint,
+        )
+        if not synced_fields:
+            return desired
+        updated = build_desired_state(
+            self.contract,
+            fingerprint_fields=synced_fp,
+            lifecycle=desired.lifecycle,
+        )
+        for field in synced_fields:
+            result.actions_taken.append(f"sync_desired:{field}")
+        if self.persist_desired_path is not None:
+            write_fingerprint_file(self.persist_desired_path, synced_fp)
+        setter = getattr(self.runtime, "set_pending_desired", None)
+        if callable(setter):
+            setter(synced_fp)
+        return updated
 
     def _record(
         self,
