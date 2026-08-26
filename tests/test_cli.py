@@ -5,6 +5,7 @@ from pathlib import Path
 from typer.testing import CliRunner
 
 from research_harness.cli import app
+from research_harness.runtime.io import write_fingerprint_file
 
 runner = CliRunner()
 
@@ -52,3 +53,65 @@ def test_status_without_ledger(tmp_path: Path) -> None:
     assert result.exit_code == 0, result.output
     assert "Project: demo" in result.output
     assert "State: STOPPED" in result.output
+
+
+def test_reconcile_cli_detects_and_fixes_stale(tmp_path: Path) -> None:
+    contract_path = tmp_path / "contract.yaml"
+    state_dir = tmp_path / "state"
+    runner.invoke(
+        app,
+        [
+            "init",
+            "--id",
+            "demo",
+            "--objective",
+            "Test objective.",
+            "--contract",
+            str(contract_path),
+        ],
+    )
+    fields = {
+        "git_sha": "abc",
+        "lock_hash": "lock",
+        "model": "gpt-4o-mini",
+        "provider": "openai",
+        "prompt_version": "v2",
+        "dataset_version": "d1",
+        "evaluator_version": "e1",
+        "config_hash": "cfg",
+    }
+    write_fingerprint_file(state_dir / "desired_fingerprint.json", fields)
+    stale = dict(fields)
+    stale["prompt_version"] = "v1"
+    write_fingerprint_file(state_dir / "observed_fingerprint.json", stale)
+
+    result = runner.invoke(
+        app,
+        [
+            "reconcile",
+            "--contract",
+            str(contract_path),
+            "--state-dir",
+            str(state_dir),
+            "--ledger",
+            str(state_dir / "ledger.db"),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert "Reconciled stale runtime" in result.output
+    assert "worker_restart" in result.output
+
+    status = runner.invoke(
+        app,
+        [
+            "status",
+            "--contract",
+            str(contract_path),
+            "--state-dir",
+            str(state_dir),
+            "--ledger",
+            str(state_dir / "ledger.db"),
+        ],
+    )
+    assert status.exit_code == 0, status.output
+    assert "Runtime freshness: CURRENT" in status.output

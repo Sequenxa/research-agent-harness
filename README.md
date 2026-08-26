@@ -6,7 +6,7 @@ A reconciliation controller for research execution — not another generic auton
 
 ## Status
 
-**Pre-implementation.** See [docs/SPEC.md](docs/SPEC.md) for the full 25-section specification and implementation slices.
+**Slice 1–2 in progress.** Phase 1 scaffold is complete; Phase 2 adds fingerprint comparison and reconciliation. See [docs/SPEC.md](docs/SPEC.md).
 
 ## Core Principle
 
