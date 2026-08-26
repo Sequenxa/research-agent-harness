@@ -47,6 +47,7 @@ class IncidentEngine:
         incident_store: IncidentStore | None = None,
         intent_store: IntentStore | None = None,
         ledger: LedgerStore | None = None,
+        observe_only: bool = False,
     ) -> None:
         self.contract = contract
         self.runtime = runtime
@@ -55,6 +56,7 @@ class IncidentEngine:
         self.incident_store = incident_store
         self.intent_store = intent_store
         self.ledger = ledger
+        self.observe_only = observe_only
 
     def reconcile_orphaned_intents(self) -> list[str]:
         """Reconcile pending intents left by a crashed supervisor."""
@@ -72,11 +74,36 @@ class IncidentEngine:
             )
             if incident is None:
                 self.intent_store.mark_failed(intent.intent_id)
+                actions.append(f"orphan_missing_incident:{intent.intent_id}")
                 continue
-            if self._execute_strategy(incident, intent.strategy, evidence):
+            if not self.contract.authority.runtime_restarts:
+                self.intent_store.mark_failed(intent.intent_id)
+                incident.evidence["blocked"] = (
+                    "Recovery blocked: authority.runtime_restarts is false"
+                )
+                if self.incident_store is not None:
+                    self.incident_store.update(incident)
+                actions.append(f"orphan_blocked:{intent.intent_id}")
+                continue
+            if self.observe_only:
+                actions.append(f"would_execute:{intent.strategy}")
+                self._record_ledger(
+                    event_type=LedgerEventType.REMEDIATION,
+                    payload={
+                        "observe_only": True,
+                        "orphaned_intent": intent.intent_id,
+                        "strategy": intent.strategy,
+                    },
+                )
+                continue
+            succeeded = self._execute_strategy(incident, intent.strategy, evidence)
+            if succeeded:
+                self.intent_store.mark_executed(intent.intent_id)
                 actions.append(f"executed:{intent.strategy}")
-            self.intent_store.mark_executed(intent.intent_id)
-            actions.append(f"orphan_reconciled:{intent.intent_id}")
+                actions.append(f"orphan_reconciled:{intent.intent_id}")
+            else:
+                self.intent_store.mark_failed(intent.intent_id)
+                actions.append(f"orphan_failed:{intent.intent_id}")
         return actions
 
     def evaluate(
@@ -118,6 +145,30 @@ class IncidentEngine:
             if self.incident_store is not None
             else []
         )
+
+        if validity.should_block:
+            reason = (
+                "validity blocked: "
+                + ", ".join(check.check_id for check in validity.failed_checks)
+            )
+            result.blocked_reason = reason
+            result.lifecycle = Lifecycle.BLOCKED
+            if open_incidents:
+                incident = open_incidents[0]
+                incident.evidence["blocked"] = reason
+                if self.incident_store is not None:
+                    self.incident_store.update(incident)
+                result.incident = incident
+            else:
+                result.incident = self._open_incident(
+                    symptom="validity_blocked",
+                    evidence={
+                        "failed_checks": [c.check_id for c in validity.failed_checks],
+                        "null_rate": validity.null_rate,
+                        "error_rate": validity.error_rate,
+                    },
+                )
+            return result
 
         if watchdog.should_open_incident and not open_incidents:
             incident = self._open_incident(
@@ -238,6 +289,18 @@ class IncidentEngine:
             return self._RemediateResult(actions=actions, blocked_reason=reason)
 
         strategy = decision.strategy
+        if self.observe_only:
+            actions.append(f"would_{strategy}")
+            self._record_ledger(
+                event_type=LedgerEventType.REMEDIATION,
+                payload={
+                    "observe_only": True,
+                    "incident_id": incident.incident_id,
+                    "strategy": strategy,
+                },
+            )
+            return self._RemediateResult(actions=actions)
+
         intent_id: str | None = None
         if self.intent_store is not None:
             intent = self.intent_store.create_pending(
@@ -304,6 +367,8 @@ class IncidentEngine:
         evidence: dict[str, Any],
     ) -> bool:
         del incident, evidence
+        if self.observe_only:
+            return False
         executor = getattr(self.runtime, "execute_recovery_strategy", None)
         if callable(executor):
             return bool(executor(strategy))
@@ -319,6 +384,16 @@ class IncidentEngine:
         return False
 
     def _close_incident(self, incident: Incident) -> list[str]:
+        if self.observe_only:
+            self._record_ledger(
+                event_type=LedgerEventType.INCIDENT,
+                payload={
+                    "observe_only": True,
+                    "action": "would_close",
+                    "incident_id": incident.incident_id,
+                },
+            )
+            return ["would_close_incident"]
         incident.stage = IncidentStage.CLOSE
         incident.status = IncidentRecordStatus.CLOSED
         incident.closed_at = datetime.now(UTC)

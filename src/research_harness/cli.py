@@ -295,6 +295,10 @@ def run_supervisor(
         int | None,
         typer.Option("--max-ticks", help="Stop after N ticks (for tests)."),
     ] = None,
+    observe_only: Annotated[
+        bool,
+        typer.Option("--observe-only", help="Plan actions without mutating runtime."),
+    ] = False,
 ) -> None:
     """Start the reconciliation supervisor loop."""
     state_path = _resolve(state_dir)
@@ -313,6 +317,7 @@ def run_supervisor(
         state_dir=state_path,
         ledger=store,
         runtime_kind=kind,
+        observe_only=observe_only,
     )
     try:
         results = supervisor.run(interval_seconds=interval, max_ticks=max_ticks)

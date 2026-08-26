@@ -59,7 +59,6 @@ def test_stop_flag_stops_tick(tmp_path: Path) -> None:
     contract_path, state_dir = _init_failing_worker(tmp_path)
     contract = load_contract(contract_path)
     runtime = FailingWorkerRuntime(project_id="failing-worker", state_dir=state_dir)
-    request_stop(state_dir)
     supervisor = Supervisor(
         contract=contract,
         runtime=runtime,
@@ -67,7 +66,10 @@ def test_stop_flag_stops_tick(tmp_path: Path) -> None:
         ledger=LedgerStore(state_dir / "ledger.db"),
         runtime_kind="failing-worker",
     )
+    supervisor.startup()
+    request_stop(state_dir)
     result = supervisor.tick()
+    supervisor.shutdown()
     clear_stop(state_dir)
     assert result.stopped is True
     assert stop_requested(state_dir) is False

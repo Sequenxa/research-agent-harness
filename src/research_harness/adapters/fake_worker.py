@@ -30,6 +30,8 @@ class FakeWorker(RuntimeAdapter, CheckpointAdapter):
         lifecycle = Lifecycle.RUNNING if self.running else Lifecycle.STOPPED
         progress = Progress.ADVANCING if self.running else Progress.STALLED
         freshness = RuntimeFreshness.CURRENT
+        if self.pending_fingerprint is not None and self.pending_fingerprint != self.fingerprint:
+            freshness = RuntimeFreshness.STALE
         return ObservedState(
             project_id=self.project_id,
             observed_at=datetime.now(UTC),
@@ -110,6 +112,9 @@ class FakeWorker(RuntimeAdapter, CheckpointAdapter):
         stale = datetime.now(UTC) - timedelta(hours=1)
         self.last_progress_at = stale
         self.last_heartbeat_at = stale
+
+    def stop(self) -> None:
+        self.running = False
 
     def tick(self, units: int = 1) -> None:
         if not self.running:

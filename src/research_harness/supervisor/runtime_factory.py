@@ -47,6 +47,14 @@ def progress_context_for(runtime: RuntimeAdapter) -> ProgressContext:
     return ProgressContext()
 
 
+def custom_validity_for(runtime: RuntimeAdapter) -> dict[str, bool]:
+    getter = getattr(runtime, "custom_validity_results", None)
+    if callable(getter):
+        results = getter()
+        return dict(results)
+    return {}
+
+
 def desired_fingerprint_for(
     runtime: RuntimeAdapter,
     *,
@@ -60,6 +68,9 @@ def desired_fingerprint_for(
         if state.pending_config_hash is not None:
             desired["config_hash"] = state.pending_config_hash
         return desired
+    pending = getattr(runtime, "pending_fingerprint", None)
+    if pending:
+        return dict(pending)
     desired_path = state_dir / "desired_fingerprint.json"
     if desired_path.exists():
         return load_fingerprint_file(desired_path)

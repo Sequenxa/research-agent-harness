@@ -17,6 +17,7 @@ from research_harness.runtime.fingerprint import (
     compare_fingerprints,
     select_relaunch_action,
 )
+from research_harness.budget import BudgetTracker
 
 
 class Reconciler:
@@ -28,10 +29,16 @@ class Reconciler:
         contract: ProjectContract,
         runtime: RuntimeAdapter,
         ledger: LedgerStore | None = None,
+        observe_only: bool = False,
+        budget_tracker: BudgetTracker | None = None,
+        action_cost_usd: float = 0.10,
     ) -> None:
         self.contract = contract
         self.runtime = runtime
         self.ledger = ledger
+        self.observe_only = observe_only
+        self.budget_tracker = budget_tracker
+        self.action_cost_usd = action_cost_usd
 
     def reconcile(self, *, desired_fingerprint: dict[str, str]) -> ReconciliationResult:
         desired = build_desired_state(self.contract, fingerprint_fields=desired_fingerprint)
@@ -86,8 +93,23 @@ class Reconciler:
             self._record(result, desired=desired, observed=observed, action=None)
             return result
 
+        if self.budget_tracker is not None:
+            allowed, reason = self.budget_tracker.can_spend(self.action_cost_usd)
+            if not allowed:
+                result.success = False
+                result.blocked_reason = reason
+                self._record(result, desired=desired, observed=observed, action=None)
+                return result
+
+        if self.observe_only:
+            result.actions_taken.append(f"would_{action}")
+            self._record(result, desired=desired, observed=observed, action=action)
+            return result
+
         self.runtime.relaunch(action)
         result.actions_taken.append(action)
+        if self.budget_tracker is not None:
+            self.budget_tracker.record_spend(self.action_cost_usd)
 
         # Re-inspect to confirm runtime adopted desired fingerprint.
         post = self.runtime.inspect()

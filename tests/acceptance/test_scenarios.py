@@ -232,10 +232,12 @@ def test_recovery_budget_oscillation_blocks() -> None:
 def test_project_lease_exclusive(tmp_path: Path) -> None:
     lease_a = ProjectLease(state_dir=tmp_path, project_id="demo", ttl_seconds=60)
     lease_b = ProjectLease(state_dir=tmp_path, project_id="demo", ttl_seconds=60)
-    assert lease_a.acquire("supervisor-a")
-    assert not lease_b.acquire("supervisor-b")
-    lease_a.release("supervisor-a")
-    assert lease_b.acquire("supervisor-b")
+    assert lease_a.acquire("instance-a")
+    assert not lease_b.acquire("instance-b")
+    assert lease_a.renew("instance-a")
+    assert not lease_b.acquire("instance-b")
+    lease_a.release("instance-a")
+    assert lease_b.acquire("instance-b")
 
 
 def test_orphan_intent_reconciled(tmp_path: Path) -> None:
