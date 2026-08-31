@@ -97,7 +97,11 @@ def _resolve_ledger_path(ledger: Path, state_dir: Path) -> Path:
     return _resolve(state_dir) / "ledger.db"
 
 
-def _load_contract_or_exit(contract_path: Path, *, state_dir: Path | None = None) -> ProjectContract:
+def _load_contract_or_exit(
+    contract_path: Path,
+    *,
+    state_dir: Path | None = None,
+) -> ProjectContract:
     path = (
         _resolve_contract_path(contract_path, state_dir)
         if state_dir is not None
@@ -150,10 +154,9 @@ def _build_runtime(
     except (ImportError, TypeError, ValueError) as error:
         console.print(f"[red]Failed to load runtime:[/red] {error}")
         raise typer.Exit(code=1) from error
-    if request.entrypoint:
-        label = f"entrypoint:{request.entrypoint}"
-    else:
-        label = request.label
+    label = (
+        f"entrypoint:{request.entrypoint}" if request.entrypoint else request.label
+    )
     return label, runtime_adapter
 
 
@@ -198,6 +201,7 @@ def _print_operational_assessment(
     observed_units: int,
     open_incidents: list[object],
     latest_event: object | None,
+    project_root: Path | None = None,
 ) -> None:
     fingerprints = assessment.fingerprints
     highlight_keys = _fingerprint_highlight_keys(contract)
@@ -239,7 +243,20 @@ def _print_operational_assessment(
         )
     else:
         console.print("Current incident: none")
-    console.print(f"Completed: {observed_units} / {contract.validity.expected_units}")
+    expected_units = contract.validity.expected_units
+    if contract.experiment is not None and project_root is not None:
+        from research_harness.experiment.plan import (
+            load_plan_for_contract,
+            resolve_expected_units,
+        )
+
+        try:
+            plan = load_plan_for_contract(contract, base_dir=project_root)
+        except FileNotFoundError:
+            plan = None
+        if plan is not None:
+            expected_units = resolve_expected_units(contract=contract, plan=plan)
+    console.print(f"Completed: {observed_units} / {expected_units}")
     if latest_event is None:
         console.print("Ledger: no events recorded")
     else:
@@ -258,6 +275,17 @@ def init_project(
     ] = "Determine whether X affects Y.",
     contract: ContractPathOption = DEFAULT_CONTRACT_PATH,
     force: Annotated[bool, typer.Option("--force", help="Overwrite existing contract.")] = False,
+    with_experiment: Annotated[
+        bool,
+        typer.Option(
+            "--with-experiment",
+            help="Scaffold experiment/plan.json + schedule and contract.experiment.",
+        ),
+    ] = False,
+    planned_units: Annotated[
+        int,
+        typer.Option("--planned-units", help="planned_units when --with-experiment is set."),
+    ] = 4,
 ) -> None:
     """Create a starter project contract."""
     contract_path = _resolve(contract)
@@ -266,8 +294,68 @@ def init_project(
         raise typer.Exit(code=1)
 
     starter = default_contract(project_id=project_id, objective=objective)
+    project_root = contract_path.parent
+
+    if with_experiment:
+        from research_harness.contract.models import ExperimentConfig
+        from research_harness.experiment.plan import (
+            ExperimentPlan,
+            compute_plan_hash,
+            hash_schedule_file,
+        )
+
+        experiment_dir = project_root / "experiment"
+        experiment_dir.mkdir(parents=True, exist_ok=True)
+        schedule_path = experiment_dir / "schedule.csv"
+        if not schedule_path.exists() or force:
+            rows = ["run_id,arm,block"]
+            for i in range(1, planned_units + 1):
+                rows.append(f"{i},arm_{(i % 2) + 1},block_1")
+            schedule_path.write_text("\n".join(rows) + "\n", encoding="utf-8")
+        plan_path = experiment_dir / "plan.json"
+        draft = {
+            "schema_version": "1.0",
+            "planned_units": planned_units,
+            "design_seed": 42,
+            "unit_of_analysis": "independent run cell",
+            "frozen_before_outcomes": True,
+            "schedule_path": "experiment/schedule.csv",
+            "schedule_hash": hash_schedule_file(schedule_path),
+            "confirmatory_analyses": [
+                {
+                    "analysis_id": "A1",
+                    "decision_rule": (
+                        "Interpret compatibility with predicted patterns; "
+                        "do not select a hypothesis automatically."
+                    ),
+                }
+            ],
+        }
+        draft["plan_hash"] = compute_plan_hash(draft)
+        plan = ExperimentPlan.model_validate(draft)
+        plan_path.write_text(plan.model_dump_json(indent=2) + "\n", encoding="utf-8")
+        starter.experiment = ExperimentConfig(
+            plan="experiment/plan.json",
+            schedule="experiment/schedule.csv",
+        )
+        starter.validity.expected_units = planned_units
+        starter.completion.condition = (
+            f"units_completed >= {planned_units} and validity.passed"
+        )
+        for field in ("plan_hash", "design_seed"):
+            if field not in starter.fingerprint.fields:
+                starter.fingerprint.fields.append(field)
+            starter.fingerprint.on_change.setdefault(field, "full_relaunch")
+        console.print(f"[green]Created experiment plan:[/green] {plan_path}")
+        console.print(f"[green]Created schedule:[/green] {schedule_path}")
+
     write_contract(starter, contract_path)
     console.print(f"[green]Created contract:[/green] {contract_path}")
+    if with_experiment:
+        console.print(
+            "Next: implement adapters (skill research-harness-adapter), "
+            "then promote and run."
+        )
 
 
 @app.command("validate")
@@ -325,6 +413,7 @@ def project_status(
         observed_units=observed.completed_units,
         open_incidents=open_incidents,
         latest_event=latest_event,
+        project_root=state_path.parent,
     )
 
 

@@ -49,7 +49,9 @@ def merge_repository_deployment_fields(
     merged = dict(desired)
     synced_fields: list[str] = []
     for field, value in dict(repository).items():
-        field_class = classifications.get(field, FingerprintFieldClass.DEPLOYMENT.value)
+        field_class = classifications.get(field)
+        if field_class is None:
+            continue
         if field_class == FingerprintFieldClass.RESEARCH_SEMANTIC.value:
             continue
         if merged.get(field) != value:

@@ -10,14 +10,18 @@ from research_harness.adapters.base import RuntimeAdapter
 from research_harness.budget import BudgetTracker
 from research_harness.completion import evaluate_completion, execute_completion_actions
 from research_harness.contract.models import ProjectContract
+from research_harness.experiment.plan import (
+    load_plan_for_contract,
+    resolve_schedule_hash_for_contract,
+)
 from research_harness.incidents import IncidentEngine, IncidentStore
 from research_harness.invariants import evaluate_invariants
 from research_harness.invariants.runner import InvariantEvaluation
 from research_harness.ledger import LedgerEventType, LedgerStore
 from research_harness.models.enums import Lifecycle
 from research_harness.models.state import ObservedState
-from research_harness.recovery import IntentStore
 from research_harness.reconciliation import Reconciler
+from research_harness.recovery import IntentStore
 from research_harness.supervisor.escalation import EscalationManager
 from research_harness.supervisor.lease import ProjectLease
 from research_harness.supervisor.runtime_factory import (
@@ -138,23 +142,6 @@ class Supervisor:
             )
 
         escalation_state = self.escalation.load()
-        if escalation_state.blocked:
-            return TickResult(
-                observed=self.runtime.inspect(),
-                lifecycle=Lifecycle.BLOCKED,
-                blocked=True,
-                message=escalation_state.reason,
-            )
-
-        if stop_requested(self.state_dir):
-            if not self.observe_only:
-                self._stop_runtime()
-            return TickResult(
-                observed=self.runtime.inspect(),
-                lifecycle=Lifecycle.STOPPED,
-                stopped=True,
-                message="stop flag set",
-            )
 
         timeout_state = self.escalation.check_timeout(now=evaluated_at, ledger=self.ledger)
         if timeout_state is not None and self.contract.escalation.on_timeout == "stop":
@@ -166,12 +153,41 @@ class Supervisor:
                     actions=["would_stop_workers"],
                     message="escalation timeout — would stop workers (observe_only)",
                 )
-            self._stop_runtime()
+            if not self._stop_runtime():
+                return TickResult(
+                    observed=self.runtime.inspect(),
+                    lifecycle=Lifecycle.BLOCKED,
+                    blocked=True,
+                    message="escalation timeout — stop could not be verified",
+                )
             return TickResult(
                 observed=self.runtime.inspect(),
                 lifecycle=Lifecycle.STOPPED,
                 stopped=True,
                 message="escalation timeout — workers stopped",
+            )
+
+        if escalation_state.blocked:
+            return TickResult(
+                observed=self.runtime.inspect(),
+                lifecycle=Lifecycle.BLOCKED,
+                blocked=True,
+                message=escalation_state.reason,
+            )
+
+        if stop_requested(self.state_dir):
+            if not self.observe_only and not self._stop_runtime():
+                return TickResult(
+                    observed=self.runtime.inspect(),
+                    lifecycle=Lifecycle.BLOCKED,
+                    blocked=True,
+                    message="stop requested but runtime could not be stopped",
+                )
+            return TickResult(
+                observed=self.runtime.inspect(),
+                lifecycle=Lifecycle.STOPPED,
+                stopped=True,
+                message="stop flag set",
             )
 
         invariants = evaluate_invariants(self.contract, ledger=self.ledger)
@@ -206,12 +222,22 @@ class Supervisor:
         )
         observed = self.runtime.inspect()
         progress = progress_context_for(self.runtime)
+        project_root = self.state_dir.parent
+        plan = None
+        schedule_hash = None
+        if self.contract.experiment is not None:
+            plan = load_plan_for_contract(self.contract, base_dir=project_root)
+            schedule_hash = resolve_schedule_hash_for_contract(
+                self.contract, plan=plan, base_dir=project_root
+            )
         evaluation = self.incident_engine.evaluate(
             observed=observed,
             progress=progress,
             desired_fingerprint=desired_fp,
             custom_validity=custom_validity_for(self.runtime),
             now=evaluated_at,
+            plan=plan,
+            observed_schedule_hash=schedule_hash,
         )
         actions = list(evaluation.actions_taken)
 
@@ -243,6 +269,7 @@ class Supervisor:
             contract=self.contract,
             observed=observed,
             validity=evaluation.validity,
+            plan=plan,
         )
         if completion.met:
             completion_actions = execute_completion_actions(
@@ -333,11 +360,7 @@ class Supervisor:
     def _stop_runtime(self) -> bool:
         if self.observe_only:
             return False
-        stopper = getattr(self.runtime, "stop", None)
-        if callable(stopper):
-            stopper()
-            return True
-        return False
+        return self.runtime.stop_verified()
 
     def _record_invariant_incident(self, invariants: InvariantEvaluation) -> None:
         failed = [result.invariant_id for result in invariants.results if not result.passed]

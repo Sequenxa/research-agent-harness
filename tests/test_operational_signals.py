@@ -37,12 +37,15 @@ class ThreeWayRuntime(RuntimeAdapter):
         self.relaunches: list[str] = []
 
     def inspect(self) -> ObservedState:
+        lifecycle = Lifecycle.STOPPED if getattr(self, "_stopped", False) else Lifecycle.RUNNING
+        progress = Progress.STALLED if getattr(self, "_stopped", False) else Progress.ADVANCING
+        health = Health.UNHEALTHY if getattr(self, "_stopped", False) else Health.HEALTHY
         return ObservedState(
             project_id=self.project_id,
             observed_at=datetime.now(UTC),
-            lifecycle=Lifecycle.RUNNING,
-            health=Health.HEALTHY,
-            progress=Progress.ADVANCING,
+            lifecycle=lifecycle,
+            health=health,
+            progress=progress,
             fingerprint=dict(self.running),
             completed_units=1,
         )
@@ -57,6 +60,9 @@ class ThreeWayRuntime(RuntimeAdapter):
 
     def restart_worker(self) -> None:
         return None
+
+    def stop(self) -> None:
+        self._stopped = True
 
     def relaunch(self, action: str) -> None:
         self.relaunches.append(action)

@@ -61,6 +61,9 @@ class MyProjectRuntime(RuntimeAdapter):
     def relaunch(self, action: str) -> None:
         # Apply graded relaunch: worker_restart | service_restart | full_relaunch | ...
 
+    def stop(self) -> None:
+        # Stop the workload; inspect() must report Lifecycle.STOPPED afterward.
+
     def mutation_preflight(self, action: str) -> MutationReadiness:
         # Project-specific safety gate before the harness mutates runtime.
         # Return REPAIRABLE when a standing-authorized prerequisite can be fixed first.
@@ -86,6 +89,7 @@ class MyProjectRuntime(RuntimeAdapter):
 
     def fingerprint_field_classifications(self) -> dict[str, str]:
         # deployment | research_semantic | authorization_sensitive
+        # Unclassified fields are NOT auto-synced into desired after repair.
         return {
             "source_manifest_sha256": "deployment",
             "models_toml_sha256": "research_semantic",
@@ -188,6 +192,8 @@ Every project needs a validated contract YAML (schema v1.1). Generate a starter:
 
 ```bash
 uv run research-harness init --id my-project --objective "..." --contract ./contract.yaml
+# Optional: scaffold experiment/plan.json + schedule and wire contract.experiment
+uv run research-harness init --id my-project --objective "..." --with-experiment --planned-units 4
 uv run research-harness validate --contract ./contract.yaml
 ```
 
@@ -200,6 +206,10 @@ Key sections for adapters:
 | `authority` | What recovery actions are allowed |
 | `recovery` | Budget limits, oscillation detection |
 | `verification.stable_after` | Burn-in window before incident close |
+| `experiment` (optional) | Paths to `plan.json` / `schedule.csv`; planned units + freeze gates |
+| `runtime_loader` (optional) | Plugin name or `module:callable` factory |
+
+When `experiment.plan` is set, the harness loads `experiment/plan.json` and uses `planned_units` for completion/status. Classify `plan_hash` / `design_seed` as `research_semantic` in `fingerprint_field_classifications()`.
 
 ## Wiring into the harness
 
@@ -237,13 +247,14 @@ runtime_loader:
 research-harness runtimes list
 research-harness --runtime policy-simulation-eval status
 research-harness --runtime-entrypoint policy_eval.harness:create_runtime preflight full_relaunch
+research-harness run --runtime policy-simulation-eval --max-ticks 20
 ```
 
 Resolution order: `--runtime-entrypoint` → `contract.runtime_loader` → `--runtime` → auto-detect (`file` / `failing-worker`).
 
 ### Compose modules explicitly (advanced)
 
-Today (v0.1), you can also compose modules explicitly:
+You can also compose modules explicitly:
 
 ```python
 from research_harness.reconciliation import Reconciler
@@ -262,15 +273,20 @@ engine = IncidentEngine(contract=contract, runtime=runtime, checkpoint=checkpoin
 engine.evaluate(observed=runtime.inspect(), progress=..., desired_fingerprint=desired)
 ```
 
-A full supervisor loop (`research-harness run`) is planned; until then, drive evaluation from your repo's main loop or a thin wrapper script.
+Prefer the supervisor loop for drop-in use: `research-harness run`.
 
 ## Checklist for a new repo
 
+- [ ] Install Agent Skills from this repo (`research-harness`, `research-harness-adapter`; optional `research-harness-plan`)
+- [ ] `research-harness init` (optionally `--with-experiment`)
 - [ ] `contract.yaml` with project-specific fingerprint fields and authority bounds
+- [ ] Optional `experiment/plan.json` frozen before outcomes
 - [ ] `RuntimeAdapter` reading **applied** runtime state (not file edits alone)
 - [ ] `CheckpointAdapter` if workers are resumable
 - [ ] `DiagnosticsAdapter` for incident evidence
 - [ ] Progress watermarks exposed (completed units + heartbeat)
+- [ ] Register runtime entry point / `runtime_loader`
+- [ ] `promote --from repository` then `run`
 - [ ] Acceptance: crash recovery, stall recovery, config swap, negative result recording
 - [ ] Run harness against `failing_worker` patterns before production workloads
 
@@ -279,5 +295,6 @@ A full supervisor loop (`research-harness run`) is planned; until then, drive ev
 - LLM provider SDK calls in harness core
 - Hypothesis evaluation logic (that's your research code)
 - Sealed prompts, credentials, or unpublished evaluators (keep private; adapter returns only operational signals)
+- Domain package skills (Scanpy, RDKit, …) — install those in the host project separately
 
 See [SPEC.md](SPEC.md) OSS strategy table for public vs private boundaries.

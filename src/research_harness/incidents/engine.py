@@ -10,6 +10,7 @@ from research_harness.adapters.base import (
     RuntimeAdapter,
 )
 from research_harness.contract.models import ProjectContract
+from research_harness.experiment.plan import ExperimentPlan
 from research_harness.incidents.models import Incident, IncidentRecordStatus, IncidentStage
 from research_harness.incidents.store import IncidentStore
 from research_harness.ledger import LedgerEventType, LedgerStore
@@ -114,6 +115,8 @@ class IncidentEngine:
         desired_fingerprint: dict[str, str],
         custom_validity: dict[str, bool] | None = None,
         now: datetime | None = None,
+        plan: ExperimentPlan | None = None,
+        observed_schedule_hash: str | None = None,
     ) -> EvaluationResult:
         evaluated_at = now or datetime.now(UTC)
         watchdog = evaluate_watchdog(
@@ -132,6 +135,8 @@ class IncidentEngine:
             completed_units=observed.completed_units,
             runtime_freshness=freshness,
             custom_results=custom_validity,
+            plan=plan,
+            observed_schedule_hash=observed_schedule_hash,
         )
 
         result = EvaluationResult(

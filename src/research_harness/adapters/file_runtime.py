@@ -29,8 +29,20 @@ class FileRuntimeAdapter(RuntimeAdapter):
         self.state_dir.mkdir(parents=True, exist_ok=True)
         self.observed_path = self.state_dir / "observed_fingerprint.json"
         self._pending_desired = pending_desired
+        self._stopped = False
 
     def inspect(self) -> ObservedState:
+        if self._stopped:
+            return ObservedState(
+                project_id=self.project_id,
+                observed_at=datetime.now(UTC),
+                lifecycle=Lifecycle.STOPPED,
+                health=Health.UNHEALTHY,
+                progress=Progress.STALLED,
+                runtime_freshness=RuntimeFreshness.STALE,
+                fingerprint=self._read_fingerprint(self.observed_path),
+                completed_units=0,
+            )
         fingerprint = self._read_fingerprint(self.observed_path)
         return ObservedState(
             project_id=self.project_id,
@@ -45,6 +57,9 @@ class FileRuntimeAdapter(RuntimeAdapter):
 
     def restart_worker(self) -> None:
         self.relaunch("worker_restart")
+
+    def stop(self) -> None:
+        self._stopped = True
 
     def relaunch(self, action: str) -> None:
         del action  # action semantics are recorded by the reconciler; file adapter applies desired.

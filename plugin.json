@@ -1,0 +1,19 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "research-agent-harness",
+  "version": "0.1.0",
+  "description": "Drop-in Agent Skills for the research reconciliation harness: install, adapter wiring, and experiment plan artifacts.",
+  "author": {
+    "name": "research-agent-harness contributors"
+  },
+  "homepage": "https://github.com/sequenxa/research-agent-harness",
+  "repository": "https://github.com/sequenxa/research-agent-harness",
+  "license": "Apache-2.0",
+  "keywords": [
+    "agent-skills",
+    "research",
+    "reconciliation",
+    "experiment-plan",
+    "runtime-adapter"
+  ]
+}

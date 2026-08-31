@@ -363,6 +363,20 @@ class RuntimeLoaderConfig(BaseModel):
     options: dict[str, Any] = Field(default_factory=dict)
 
 
+class ExperimentConfig(BaseModel):
+    """Optional pointers to methodology artifacts the harness can reconcile against.
+
+    Absent ``experiment:`` keeps v1.1 behavior (``validity.expected_units`` only).
+    When present, ``plan`` is a path to harness-owned ``experiment/plan.json``.
+    """
+
+    plan: str = Field(min_length=1, description="Path to experiment/plan.json")
+    schedule: str | None = Field(
+        default=None,
+        description="Optional path to schedule.csv (run order / cells).",
+    )
+
+
 class ProjectContract(BaseModel):
     """Enhanced project contract schema v1.1."""
 
@@ -379,6 +393,7 @@ class ProjectContract(BaseModel):
     completion: CompletionConfig
     escalation: EscalationConfig
     runtime_loader: RuntimeLoaderConfig | None = None
+    experiment: ExperimentConfig | None = None
 
     @field_validator("contract_version")
     @classmethod

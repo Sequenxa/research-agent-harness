@@ -6,14 +6,28 @@ A reconciliation controller for research execution — not another generic auton
 
 ## Status
 
-**v0.1 milestone complete** (Slices 1–6). Deterministic harness with contract validation, reconciliation, watchdog, incidents, recovery budgets, burn-in verification, and acceptance scenarios A–F.
+**v0.2 dogfood milestone** — core architecture validated by real project integration (`policy-simulation-eval`), not just synthetic acceptance tests.
+
+| Capability | Status |
+|------------|--------|
+| Deterministic acceptance suite (A–F) | ✓ |
+| Real project `RuntimeAdapter` + Docker inspection | ✓ |
+| Three-way deployment fingerprinting (running / desired / repository) | ✓ |
+| Stale live runtime detection + graded relaunch | ✓ |
+| Mutation preflight + autonomous prerequisite remediation | ✓ |
+| Post-relaunch fingerprint verification | ✓ |
+| Runtime plugins via entry points / contract hook | ✓ |
+| Supervisor loop (`research-harness run`) | ✓ |
+| Optional experiment plan artifacts + Agent Skills drop-in | ✓ |
+
+Not yet proven: live worker resume after reconciliation in a running scheduler (offline canary only so far).
 
 | Doc | Purpose |
 |-----|---------|
 | [docs/SPEC.md](docs/SPEC.md) | Full 25-section specification |
 | [docs/ADAPTERS.md](docs/ADAPTERS.md) | **Integrate your repo** — implement Runtime/Checkpoint/Diagnostics adapters |
 | [docs/WHY_NOT_ORCHESTRATORS.md](docs/WHY_NOT_ORCHESTRATORS.md) | vs Temporal / Prefect / Airflow |
-| [docs/MILESTONE.md](docs/MILESTONE.md) | What shipped in v0.1, limitations, next steps |
+| [docs/MILESTONE.md](docs/MILESTONE.md) | v0.1 + v0.2 dogfood report, limitations, next steps |
 
 ## Core principle
 
@@ -35,30 +49,55 @@ Compared to Temporal/Prefect/Airflow: those handle durable execution and retries
 Requires [uv](https://docs.astral.sh/uv/). From repo root:
 
 ```bash
-export UV_PROJECT_ENVIRONMENT=/tmp/research-harness-venv  # external drive workaround
+# Required on external volumes (macOS AppleDouble ._ sidecars break .venv on the drive)
+export UV_PROJECT_ENVIRONMENT=/tmp/research-harness-venv
 uv sync --dev
 
 # End-to-end example (init → units → config swap → reconcile)
 uv run python examples/failing_worker/run.py demo
 
 # Harness CLI
-uv run research-harness init
+uv run research-harness init --id demo --objective "Determine whether X affects Y."
+# Optional methodology scaffold:
+# uv run research-harness init --id demo --objective "..." --with-experiment --planned-units 4 --force
 uv run research-harness validate
 uv run research-harness status
+uv run research-harness run --runtime failing-worker --max-ticks 5
+```
+
+If `uv sync` / `uv run` fails with `._ruff` / RECORD mismatches, remove the on-drive venv and use the export above:
+
+```bash
+rm -rf .venv
+export UV_PROJECT_ENVIRONMENT=/tmp/research-harness-venv
+uv sync --dev
 ```
 
 ## Integrating an external repo
 
-1. Read [docs/ADAPTERS.md](docs/ADAPTERS.md)
-2. Copy `contract.yaml` patterns from `uv run research-harness init`
-3. Implement `RuntimeAdapter`, `CheckpointAdapter`, `DiagnosticsAdapter` in your repo
-4. Use `FailingWorkerRuntime` and acceptance tests A–F as templates
-5. Drive `Reconciler` + `IncidentEngine` from your supervisor loop until `research-harness run` lands
+Drop-in path (Agent Skills + adapters):
+
+1. Install skills from this repo (`plugin.json` + `skills/`):
+   ```bash
+   npx skills add <owner>/research-agent-harness
+   # or: gh skill install <owner>/research-agent-harness research-harness
+   ```
+2. `uv run research-harness init --id my-project --objective "..."`  
+   Optional methodology seam: add `--with-experiment --planned-units 4`
+3. Implement adapters (skill `research-harness-adapter` or [docs/ADAPTERS.md](docs/ADAPTERS.md))
+4. Register runtime via `runtime_loader` / entry points
+5. `research-harness promote --from repository` then `research-harness run`
+
+Optional: host projects can install K-Dense [scientific-agent-skills](https://github.com/K-Dense-AI/scientific-agent-skills) (`experimental-design`, `hypothesis-generation`, …) and project outputs into `experiment/plan.json` via skill `research-harness-plan`. Domain skills stay in the host — not in harness core.
+
+Use `FailingWorkerRuntime` and acceptance tests A–F as templates.
 
 ## Project layout
 
 ```text
 research-agent-harness/
+├── plugin.json             # Agent Plugins manifest
+├── skills/                 # drop-in agent skills
 ├── src/research_harness/   # core harness
 ├── examples/failing_worker/  # deterministic demo workload
 ├── tests/acceptance/       # scenarios A–F

@@ -203,6 +203,11 @@ class Reconciler:
     ) -> None:
         if self.ledger is None:
             return
+        freshness = compare_fingerprints(
+            desired=desired.fingerprint,
+            observed=observed.fingerprint,
+            fields=self.contract.fingerprint.fields,
+        ).freshness
         self.ledger.append(
             project_id=result.project_id,
             contract_version=desired.contract_version,
@@ -220,10 +225,6 @@ class Reconciler:
                 ),
                 "desired_fingerprint": desired.fingerprint,
                 "observed_fingerprint": observed.fingerprint,
-                "runtime_freshness": (
-                    RuntimeFreshness.CURRENT.value
-                    if not result.differences or result.success
-                    else RuntimeFreshness.STALE.value
-                ),
+                "runtime_freshness": freshness.value,
             },
         )

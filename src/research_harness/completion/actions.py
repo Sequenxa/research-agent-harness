@@ -43,8 +43,4 @@ def execute_completion_actions(
 
 
 def _stop_workers(runtime: RuntimeAdapter) -> bool:
-    stopper = getattr(runtime, "stop", None)
-    if not callable(stopper):
-        return False
-    stopper()
-    return True
+    return runtime.stop_verified()

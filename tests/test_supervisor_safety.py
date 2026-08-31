@@ -14,7 +14,7 @@ from research_harness.ledger import LedgerStore
 from research_harness.models.enums import RuntimeFreshness
 from research_harness.recovery import IntentStore
 from research_harness.reconciliation import Reconciler
-from research_harness.supervisor import ProjectLease, Supervisor
+from research_harness.supervisor import ProjectLease, Supervisor, request_stop
 
 
 def _full_fingerprint(model: str) -> dict[str, str]:
@@ -270,6 +270,58 @@ def test_budget_persists_across_supervisor_restarts(tmp_path: Path) -> None:
         instance_id="instance-b",
     )
     assert supervisor_b.budget.state.spend_usd == 0.5
+
+
+def test_escalation_timeout_stops_after_blocked(tmp_path: Path) -> None:
+    contract = _fast_contract()
+    contract.authority.runtime_restarts = False
+    contract.escalation.blocking_timeout = Duration.parse("1s")
+    contract.escalation.on_timeout = "stop"
+    worker = FakeWorker(project_id="demo", fingerprint=_full_fingerprint("model-a"))
+    desired = _full_fingerprint("model-b")
+    worker.set_pending_fingerprint(desired)
+    supervisor = Supervisor(
+        contract=contract,
+        runtime=worker,
+        state_dir=tmp_path,
+        ledger=LedgerStore(tmp_path / "ledger.db"),
+    )
+    supervisor.startup()
+    first = supervisor.tick()
+    assert first.blocked
+    assert worker.running
+
+    time.sleep(1.1)
+    second = supervisor.tick()
+    supervisor.shutdown()
+
+    assert second.stopped
+    assert not worker.running
+    assert "escalation timeout" in (second.message or "")
+
+
+def test_stop_without_verified_stop_returns_blocked(tmp_path: Path) -> None:
+    contract = _fast_contract()
+
+    class UnstoppableWorker(FakeWorker):
+        def stop(self) -> None:
+            return None
+
+    worker = UnstoppableWorker(project_id="demo", fingerprint=_full_fingerprint("test"))
+    supervisor = Supervisor(
+        contract=contract,
+        runtime=worker,
+        state_dir=tmp_path,
+        ledger=LedgerStore(tmp_path / "ledger.db"),
+    )
+    supervisor.startup()
+    request_stop(tmp_path)
+    result = supervisor.tick()
+    supervisor.shutdown()
+
+    assert result.blocked
+    assert worker.running
+    assert "could not be stopped" in (result.message or "")
 
 
 def test_lease_stale_after_ttl_without_renewal(tmp_path: Path) -> None:

@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from research_harness.contract.models import ProjectContract
+from research_harness.experiment.plan import ExperimentPlan, resolve_expected_units
 from research_harness.models.enums import RuntimeFreshness
 
 
@@ -33,8 +34,16 @@ def evaluate_validity(
     error_units: int = 0,
     runtime_freshness: RuntimeFreshness = RuntimeFreshness.CURRENT,
     custom_results: dict[str, bool] | None = None,
+    plan: ExperimentPlan | None = None,
+    observed_schedule_hash: str | None = None,
+    require_frozen: bool | None = None,
 ) -> ValidityResult:
-    """Run basic validity gates from the contract."""
+    """Run basic validity gates from the contract.
+
+    When ``plan`` is provided (optional experiment artifact), also gate on
+    plan_hash integrity, planned unit count, schedule_hash match, and freeze.
+    Absent plan keeps v1.1 behavior unchanged.
+    """
     custom_results = custom_results or {}
     total = max(completed_units, 1)
     null_rate = null_units / total
@@ -85,6 +94,17 @@ def evaluate_validity(
                 )
             )
 
+    if plan is not None:
+        failed.extend(
+            _evaluate_plan_gates(
+                contract=contract,
+                plan=plan,
+                completed_units=completed_units,
+                observed_schedule_hash=observed_schedule_hash,
+                require_frozen=require_frozen,
+            )
+        )
+
     should_block = any(item.on_fail == "block" for item in failed)
     should_open_incident = bool(failed) and not should_block
     if contract.validity.on_invalid == "incident" and failed:
@@ -99,3 +119,71 @@ def evaluate_validity(
         should_open_incident=should_open_incident,
         should_block=should_block,
     )
+
+
+def _evaluate_plan_gates(
+    *,
+    contract: ProjectContract,
+    plan: ExperimentPlan,
+    completed_units: int,
+    observed_schedule_hash: str | None,
+    require_frozen: bool | None,
+) -> list[ValidityCheckResult]:
+    from research_harness.experiment.plan import compute_plan_hash
+
+    failed: list[ValidityCheckResult] = []
+    expected = resolve_expected_units(contract=contract, plan=plan)
+
+    computed = compute_plan_hash(plan)
+    if plan.plan_hash != computed:
+        failed.append(
+            ValidityCheckResult(
+                check_id="plan_hash",
+                passed=False,
+                on_fail="incident",
+                detail=f"plan_hash mismatch: recorded={plan.plan_hash} computed={computed}",
+            )
+        )
+
+    if plan.planned_units != expected:
+        failed.append(
+            ValidityCheckResult(
+                check_id="planned_units",
+                passed=False,
+                on_fail="incident",
+                detail=(
+                    f"planned_units ({plan.planned_units}) != "
+                    f"resolved expected_units ({expected})"
+                ),
+            )
+        )
+
+    if (
+        observed_schedule_hash is not None
+        and plan.schedule_hash is not None
+        and observed_schedule_hash != plan.schedule_hash
+    ):
+        failed.append(
+            ValidityCheckResult(
+                check_id="schedule_hash",
+                passed=False,
+                on_fail="incident",
+                detail=(
+                    f"schedule_hash mismatch: plan={plan.schedule_hash} "
+                    f"observed={observed_schedule_hash}"
+                ),
+            )
+        )
+
+    must_freeze = require_frozen if require_frozen is not None else completed_units > 0
+    if must_freeze and not plan.frozen_before_outcomes:
+        failed.append(
+            ValidityCheckResult(
+                check_id="plan_frozen",
+                passed=False,
+                on_fail="block",
+                detail="experiment plan must be frozen_before_outcomes before recording results",
+            )
+        )
+
+    return failed

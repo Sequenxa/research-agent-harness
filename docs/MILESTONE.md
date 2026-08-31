@@ -1,8 +1,87 @@
-# Milestone v0.1 — Deliverable Report
+# Milestone Report
+
+## v0.2 — Dogfood milestone (current)
+
+Real-project validation in `policy-simulation-eval`. Core reconciliation flow is implemented in the harness `Reconciler`, not project-specific orchestration.
+
+### What dogfood proved
+
+The harness can:
+
+1. Detect that a real research deployment is stale
+2. Choose the required relaunch action
+3. Refuse an initially unsafe mutation via preflight
+4. Recognize an autonomously repairable prerequisite
+5. Repair and verify the prerequisite
+6. Sync repaired deployment/authorization fields into desired state
+7. Relaunch and confirm the deployment converged to the promoted desired fingerprint
+
+### Reconciliation flow (core)
+
+```text
+STALE
+↓
+choose strongest relaunch action
+↓
+mutation preflight
+↓
+REPAIRABLE
+↓
+repair prerequisite
+↓
+verify repair
+↓
+sync repaired deployment state
+↓
+preflight READY
+↓
+relaunch
+↓
+reinspect actual runtime
+↓
+require fingerprint CURRENT
+```
+
+### Key commits since v0.1
+
+| Commit | Change |
+|--------|--------|
+| `2c2bdbc` | Leases, blocked-state, observe-only, budgets, stop safety, orphan intents |
+| `c242930` | Running / desired / repository fingerprints, mutation preflight |
+| `f6c18bc` | `REPAIRABLE`, prerequisite remediation, deployment-delta bundling |
+| `e507103` | External runtime plugins via entry points + contract hook |
+| `08b0b6e` | Reconcile via runtime loader; sync desired after repair |
+
+### Tests
+
+```bash
+export UV_PROJECT_ENVIRONMENT=/tmp/research-harness-venv
+uv sync --dev
+uv run pytest -q
+```
+
+**74+ tests passing**, including acceptance scenarios A–F, supervisor safety, preflight remediation, and operational signal coverage.
+
+### Known limitations (v0.2)
+
+- **Live scheduler resume** — offline canary validated reconciliation; live `24 → 25` unit resume not yet observed
+- **Invariant checks** — built-in stubs only; project adapters supply real enforcement
+- **Budget spend** — reconciliation actions record nominal spend; no provider USD metering
+- **No web UI, K8s, Redis** — local SQLite + file state only
+
+### Next steps
+
+1. Live v10 canary observing unit resume after reconciliation
+2. Second adapter: `model-collapse-research` (different failure modes than policy simulation)
+3. No new harness architecture until dogfood forces it
+
+---
+
+## v0.1 — Initial deterministic milestone
 
 First deterministic harness milestone per [SPEC.md](SPEC.md) Section 25.
 
-## What was built
+### What was built
 
 | Component | Location |
 |-----------|----------|
@@ -22,15 +101,7 @@ First deterministic harness milestone per [SPEC.md](SPEC.md) Section 25.
 | `failing_worker` example + DiagnosticsAdapter | `examples/failing_worker/`, `adapters/failing_worker.py` |
 | Adapter guide | [docs/ADAPTERS.md](ADAPTERS.md) |
 
-## Tests executed
-
-```bash
-export UV_PROJECT_ENVIRONMENT=/tmp/research-harness-venv
-uv sync --dev
-uv run pytest -q
-```
-
-**45+ tests passing**, including acceptance scenarios A–F and supervisor CLI coverage:
+### Acceptance scenarios
 
 | Scenario | Proves |
 |----------|--------|
@@ -40,42 +111,3 @@ uv run pytest -q
 | D | Bad fix → strategy escalation (no infinite retry) |
 | E | Unauthorized recovery → BLOCKED with boundary message |
 | F | Negative scientific result recorded, no incident |
-
-## End-to-end behavior observed
-
-```bash
-uv run python examples/failing_worker/run.py demo
-uv run research-harness run --runtime failing-worker --max-ticks 5
-uv run research-harness doctor --runtime failing-worker
-uv run research-harness stop
-```
-
-Observed output path:
-
-1. `init` — writes `contract.yaml` and worker state under `.state/`
-2. `step` — processes units, updates checkpoint
-3. `swap-config` — stages `cfg-b`; runtime fingerprint stays on applied `cfg-a` (stale)
-4. `reconcile` — `worker_restart` applies pending config; observed `config_hash` becomes `cfg-b`
-5. `run` — supervisor loop ticks with lease, orphan intent reconciliation, escalation, invariants
-
-Ledger records reconciliation and experiment events in `.state/ledger.db`.
-
-## Known limitations (v0.1)
-
-- **Invariant checks** — built-in stubs only; project adapters supply real enforcement
-- **Budget spend** — reconciliation actions record nominal spend; no provider USD metering
-- **Generic `research-harness reconcile`** — file-based fingerprint JSON; use `failing_worker/run.py reconcile` for the example worker
-- **No web UI, K8s, Redis** — local SQLite + file state only
-
-## Spec completion status
-
-All 25 SPEC sections have a v0.1 implementation or documented deferral. Remaining work before dogfood is integration testing in a real Sequenxa repo, not core harness gaps.
-
-## Next recommended integration point
-
-Per [SPEC.md](SPEC.md) release sequence:
-
-1. **v0.2** — `policy-simulation-eval` adapter in a real Sequenxa repo (private), implementing the three v0.1 adapters against an actual workload
-2. **Observe-only mode** — run harness read-only against a live project to derive failure taxonomy before enabling recovery
-
-Start with [ADAPTERS.md](ADAPTERS.md) and copy patterns from `FailingWorkerRuntime`.

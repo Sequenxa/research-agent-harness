@@ -32,6 +32,10 @@ class StubRuntime(RuntimeAdapter):
         del action
 
 
+    def stop(self) -> None:
+        return None
+
+
 def create_stub_runtime(*, project_id: str, state_dir: Path, **options: Any) -> RuntimeAdapter:
     return StubRuntime(
         project_id=project_id,

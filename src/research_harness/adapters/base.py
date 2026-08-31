@@ -3,6 +3,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Any
 
+from research_harness.models.enums import Lifecycle
 from research_harness.models.mutation import MutationReadiness, MutationRepairResult
 from research_harness.models.state import ObservedState
 
@@ -21,6 +22,15 @@ class RuntimeAdapter(ABC):
     @abstractmethod
     def relaunch(self, action: str) -> None:
         """Apply a contract-declared relaunch action."""
+
+    @abstractmethod
+    def stop(self) -> None:
+        """Stop the running workload."""
+
+    def stop_verified(self) -> bool:
+        """Stop the workload and confirm it reported STOPPED."""
+        self.stop()
+        return self.inspect().lifecycle == Lifecycle.STOPPED
 
     def mutation_preflight(self, action: str) -> MutationReadiness:
         """Project-specific safety gate before applying a mutation.

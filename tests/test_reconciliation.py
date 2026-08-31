@@ -20,17 +20,8 @@ class FakeRuntimeAdapter(RuntimeAdapter):
         self.relaunches: list[str] = []
         self.restarts = 0
 
-    def inspect(self) -> ObservedState:
-        return ObservedState(
-            project_id=self.project_id,
-            observed_at=datetime.now(UTC),
-            lifecycle=Lifecycle.RUNNING,
-            health=Health.HEALTHY,
-            progress=Progress.ADVANCING,
-            runtime_freshness=RuntimeFreshness.STALE,
-            fingerprint=dict(self.fingerprint),
-            completed_units=10,
-        )
+    def stop(self) -> None:
+        self._stopped = True
 
     def restart_worker(self) -> None:
         self.restarts += 1
@@ -40,6 +31,21 @@ class FakeRuntimeAdapter(RuntimeAdapter):
         # After relaunch, runtime adopts desired fingerprint from last reconcile.
         if hasattr(self, "_pending_fingerprint"):
             self.fingerprint = dict(self._pending_fingerprint)
+
+    def inspect(self) -> ObservedState:
+        lifecycle = Lifecycle.STOPPED if getattr(self, "_stopped", False) else Lifecycle.RUNNING
+        progress = Progress.STALLED if getattr(self, "_stopped", False) else Progress.ADVANCING
+        health = Health.UNHEALTHY if getattr(self, "_stopped", False) else Health.HEALTHY
+        return ObservedState(
+            project_id=self.project_id,
+            observed_at=datetime.now(UTC),
+            lifecycle=lifecycle,
+            health=health,
+            progress=progress,
+            runtime_freshness=RuntimeFreshness.STALE,
+            fingerprint=dict(self.fingerprint),
+            completed_units=10,
+        )
 
 
 def test_build_desired_state_from_contract_and_fields() -> None:
@@ -234,6 +240,51 @@ def test_merge_repository_deployment_fields_skips_research_semantic() -> None:
     assert merged["authorization_sha256"] == "auth-new"
     assert merged["prompt_version"] == "v2"
     assert set(synced) == {"config_hash", "authorization_sha256"}
+
+
+def test_merge_repository_deployment_fields_skips_unclassified() -> None:
+    runtime = SyncableRuntime(
+        project_id="demo",
+        running=_fields(),
+        repository=_fields(config_hash="cfg-b", model_roster_sha="roster-new"),
+    )
+    desired = _fields(config_hash="cfg-a")
+
+    merged, synced = merge_repository_deployment_fields(runtime, desired)
+
+    assert "model_roster_sha" not in merged
+    assert synced == ["config_hash"]
+
+
+def test_observe_only_ledger_records_stale_freshness(tmp_path: Any) -> None:
+    contract = default_contract(project_id="demo", objective="obj")
+    desired_fields = {
+        "git_sha": "abc",
+        "lock_hash": "lock",
+        "model": "gpt-4o-mini",
+        "provider": "openai",
+        "prompt_version": "v2",
+        "dataset_version": "d1",
+        "evaluator_version": "e1",
+        "config_hash": "cfg",
+    }
+    observed_fields = dict(desired_fields)
+    observed_fields["prompt_version"] = "v1"
+    runtime = FakeRuntimeAdapter(project_id="demo", fingerprint=observed_fields)
+    ledger = LedgerStore(tmp_path / "ledger.db")
+    reconciler = Reconciler(
+        contract=contract,
+        runtime=runtime,
+        ledger=ledger,
+        observe_only=True,
+    )
+
+    reconciler.reconcile(desired_fingerprint=desired_fields)
+
+    events = ledger.list_events(project_id="demo")
+    payload = events[-1].payload
+    assert payload["runtime_freshness"] == RuntimeFreshness.STALE.value
+    assert payload["success"] is True
 
 
 def test_reconcile_syncs_desired_after_repair(tmp_path: Any) -> None:

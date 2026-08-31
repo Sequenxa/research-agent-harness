@@ -28,6 +28,37 @@ def test_init_creates_contract(tmp_path: Path) -> None:
     assert contract_path.exists()
 
 
+def test_init_with_experiment_scaffolds_plan(tmp_path: Path) -> None:
+    from research_harness.contract.loader import load_contract
+    from research_harness.experiment.plan import compute_plan_hash, load_experiment_plan
+
+    contract_path = tmp_path / "contract.yaml"
+    result = runner.invoke(
+        app,
+        [
+            "init",
+            "--id",
+            "demo",
+            "--objective",
+            "Test objective.",
+            "--contract",
+            str(contract_path),
+            "--with-experiment",
+            "--planned-units",
+            "4",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    contract = load_contract(contract_path)
+    assert contract.experiment is not None
+    assert contract.validity.expected_units == 4
+    plan = load_experiment_plan(tmp_path / "experiment" / "plan.json")
+    assert plan.planned_units == 4
+    assert plan.frozen_before_outcomes is True
+    assert plan.plan_hash == compute_plan_hash(plan)
+    assert (tmp_path / "experiment" / "schedule.csv").exists()
+
+
 def test_validate_accepts_fixture_contract() -> None:
     fixture = Path(__file__).parent / "fixtures" / "contract-v1.1.yaml"
     result = runner.invoke(app, ["validate", "--contract", str(fixture)])
