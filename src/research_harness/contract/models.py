@@ -181,10 +181,47 @@ class ProgressConfig(BaseModel):
     phases: dict[str, PhaseConfig] = Field(default_factory=dict)
     slow_operation_grace: DurationField | None = None
     stall_requires: str = "any"
+    suspect_progress_within: DurationField = Field(
+        default_factory=lambda: Duration(seconds=0),
+        description=(
+            "Treat watermark last_advanced_at as fake when its age vs observed_at "
+            "is at most this duration (0s = exact equality, the common lying pattern)."
+        ),
+    )
+    scheduled_path_disarmed_stall_after: DurationField | None = Field(
+        default=None,
+        description=(
+            "When set, escalate if operational mode is a drain/recovery mode, "
+            "scheduled_path_armed is false, and watermarks are not advancing."
+        ),
+    )
+    drain_modes: list[str] = Field(
+        default_factory=lambda: [
+            "recovery",
+            "drain",
+            "recovery-active",
+            "recovery_active",
+        ],
+        description="Operational modes that imply the scheduled path may be held disarmed.",
+    )
 
     @field_validator("slow_operation_grace", mode="before")
     @classmethod
     def parse_slow_operation_grace(cls, value: Any) -> Duration | None:
+        if value is None:
+            return None
+        return parse_duration(value)
+
+    @field_validator("suspect_progress_within", mode="before")
+    @classmethod
+    def parse_suspect_progress_within(cls, value: Any) -> Duration:
+        if value is None:
+            return Duration(seconds=0)
+        return parse_duration(value)
+
+    @field_validator("scheduled_path_disarmed_stall_after", mode="before")
+    @classmethod
+    def parse_scheduled_path_disarmed_stall_after(cls, value: Any) -> Duration | None:
         if value is None:
             return None
         return parse_duration(value)
@@ -274,6 +311,14 @@ class BudgetConfig(BaseModel):
 
 
 class RecoveryConfig(BaseModel):
+    """Budgets for harness remediation strategies only.
+
+    ``max_identical_attempts`` / oscillation apply to harness recovery actions
+    (``worker_restart``, ``service_restart``, ``full_relaunch``, …). They do
+    **not** automatically constrain project-owned driver loops; adapters/drivers
+    must enforce their own hard-stops and report durable progress signals.
+    """
+
     max_identical_attempts: int = Field(default=2, ge=1)
     max_attempts_per_incident: int = Field(default=6, ge=1)
     detect_oscillation: bool = True

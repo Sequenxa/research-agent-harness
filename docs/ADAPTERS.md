@@ -111,6 +111,7 @@ Do not collapse native scheduler health into harness inspection health:
 | `runtime_freshness` | Is running == desired deployment? |
 | `inspection` | Can the harness observe state? |
 | `mutation_readiness` | Is a contemplated mutation safe right now? |
+| `scheduled_path_armed` | Is the project's scheduled path loaded/armed? |
 
 | Preflight status | Meaning | Harness action |
 |------------------|---------|----------------|
@@ -120,12 +121,53 @@ Do not collapse native scheduler health into harness inspection health:
 
 Observe and diagnose are always permitted when inspection works. Plan remediation is permitted. **Mutate/relaunch** requires passing `mutation_preflight(action)` (after any REPAIRABLE remediation) in addition to harness authority.
 
+`research-harness status` runs an **observe-only incident evaluation**: stalls, suspect progress, and drain-held conditions open rows in `incidents.db` even when the supervisor is not allowed to mutate.
+
 ```bash
 research-harness status
 research-harness preflight full_relaunch
 research-harness preflight full_relaunch --repair
 research-harness promote --from repository
 ```
+
+### Durable progress (do not lie)
+
+Stall detection compares watermark `last_advanced_at` to wall clock. If your adapter sets:
+
+```python
+now = datetime.now(UTC)
+return ObservedState(observed_at=now, last_progress_at=now, ...)
+```
+
+…then `stall_after` never fires. The harness treats `last_progress_at` / watermark timestamps **equal to `observed_at`** (within `progress.suspect_progress_within`, default `0s`) as **suspect progress** and opens a `suspect_progress` incident.
+
+Use durable sources (unit file mtimes, checkpoint timestamps, ledger watermarks) — never stamp progress with the inspect clock.
+
+### Scheduled path / drain hold
+
+When a recovery or drain mode disarms the project's scheduled path, expose:
+
+```python
+return ObservedState(
+    ...,
+    scheduled_path_armed=False,  # or True when calendar/cron/LaunchAgents are loaded
+    extra={"mode": "recovery-active"},  # or ProgressContext.operational_mode
+)
+```
+
+Contract (optional):
+
+```yaml
+progress:
+  scheduled_path_disarmed_stall_after: 12h
+  drain_modes: [recovery, drain, recovery-active, recovery_active]
+```
+
+If mode is a drain/recovery mode, `scheduled_path_armed` is false, and watermarks are not advancing past that duration, the watchdog symptom is `scheduled_path_held_by_drain`. Do **not** bake LaunchAgent specifics into the harness — only this boolean + mode signal.
+
+### Recovery budgets vs project drivers
+
+`recovery.max_identical_attempts` and oscillation detection apply only to **harness remediation strategies** (`worker_restart`, `service_restart`, `full_relaunch`, …). They do **not** auto-stop project-owned recovery/driver loops. Drivers must enforce their own hard-stops; the harness detects the stuck *state* via watermarks + `scheduled_path_armed`.
 
 ### Fingerprint rules
 
@@ -203,8 +245,10 @@ Key sections for adapters:
 |---------|----------------|
 | `fingerprint` | Which fields you must populate in `inspect()` |
 | `progress.watermarks` | What stall detection expects (ledger vs adapter sources) |
+| `progress.suspect_progress_within` | Reject inspect-clock progress stamps (default `0s`) |
+| `progress.scheduled_path_disarmed_stall_after` | Escalate when drain holds the scheduled path disarmed |
 | `authority` | What recovery actions are allowed |
-| `recovery` | Budget limits, oscillation detection |
+| `recovery` | Harness remediation budgets only (not project driver loops) |
 | `verification.stable_after` | Burn-in window before incident close |
 | `experiment` (optional) | Paths to `plan.json` / `schedule.csv`; planned units + freeze gates |
 | `runtime_loader` (optional) | Plugin name or `module:callable` factory |

@@ -377,8 +377,26 @@ def project_status(
     runtime: RuntimeOption = None,
     entrypoint: RuntimeEntrypointOption = None,
 ) -> None:
-    """Show current project status from contract, runtime, and ledger."""
+    """Show current project status from contract, runtime, and ledger.
+
+    Runs an observe-only incident evaluation so stalls and suspect progress
+    open incidents even when the supervisor is not mutating the runtime.
+    """
+    from research_harness.experiment.plan import (
+        load_plan_for_contract,
+        resolve_schedule_hash_for_contract,
+    )
+    from research_harness.incidents import IncidentEngine
+    from research_harness.supervisor.runtime_factory import (
+        as_checkpoint,
+        as_diagnostics,
+        custom_validity_for,
+        desired_fingerprint_for,
+        progress_context_for,
+    )
+
     state_path = _resolve(state_dir)
+    state_path.mkdir(parents=True, exist_ok=True)
     loaded = _load_contract_or_exit(contract, state_dir=state_path)
     kind, runtime_adapter = _build_runtime(
         contract=loaded,
@@ -396,12 +414,43 @@ def project_status(
     )
 
     ledger_path = _resolve_ledger_path(ledger, state_path)
-    latest_event = None
-    if ledger_path.exists():
-        store = LedgerStore(ledger_path)
-        latest_event = store.latest_event(project_id=loaded.project.id)
+    store = LedgerStore(ledger_path)
+    latest_event = store.latest_event(project_id=loaded.project.id)
 
     incident_store = IncidentStore(state_path / "incidents.db")
+    project_root = state_path.parent
+    plan = None
+    schedule_hash = None
+    if loaded.experiment is not None:
+        try:
+            plan = load_plan_for_contract(loaded, base_dir=project_root)
+            schedule_hash = resolve_schedule_hash_for_contract(
+                loaded, plan=plan, base_dir=project_root
+            )
+        except FileNotFoundError:
+            plan = None
+
+    evaluation = IncidentEngine(
+        contract=loaded,
+        runtime=runtime_adapter,  # type: ignore[arg-type]
+        checkpoint=as_checkpoint(runtime_adapter),
+        diagnostics=as_diagnostics(runtime_adapter),
+        incident_store=incident_store,
+        ledger=store,
+        observe_only=True,
+    ).evaluate(
+        observed=observed,
+        progress=progress_context_for(runtime_adapter),
+        desired_fingerprint=desired_fingerprint_for(
+            runtime_adapter, state_dir=state_path, runtime_kind=kind
+        ),
+        custom_validity=custom_validity_for(runtime_adapter),
+        plan=plan,
+        observed_schedule_hash=schedule_hash,
+    )
+    # Prefer watchdog truth over adapter self-reported progress.
+    assessment.progress = evaluation.watchdog.progress
+
     open_incidents = incident_store.list_open(project_id=loaded.project.id)
 
     _print_operational_assessment(
@@ -413,8 +462,17 @@ def project_status(
         observed_units=observed.completed_units,
         open_incidents=open_incidents,
         latest_event=latest_event,
-        project_root=state_path.parent,
+        project_root=project_root,
     )
+    if evaluation.watchdog.symptom:
+        console.print(f"Watchdog symptom: {evaluation.watchdog.symptom}")
+    if evaluation.watchdog.suspect_watermarks:
+        console.print(
+            "Suspect progress timestamps: "
+            + ", ".join(evaluation.watchdog.suspect_watermarks)
+        )
+    if evaluation.actions_taken:
+        console.print("Observe actions: " + ", ".join(evaluation.actions_taken))
 
 
 @app.command("promote")

@@ -68,6 +68,7 @@ uv run pytest -q
 - **Invariant checks** — built-in stubs only; project adapters supply real enforcement
 - **Budget spend** — reconciliation actions record nominal spend; no provider USD metering
 - **No web UI, K8s, Redis** — local SQLite + file state only
+- **Project driver loops** — harness recovery budgets do not auto-stop project-owned drains; adapters must report durable progress + `scheduled_path_armed`
 
 ### Next steps
 

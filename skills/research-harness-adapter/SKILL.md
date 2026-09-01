@@ -70,8 +70,13 @@ Classify `plan_hash` and `design_seed` as `research_semantic` when using experim
 | runtime freshness | running == desired? |
 | inspection | Can the harness observe state? |
 | mutation readiness | Safe to mutate now? |
+| scheduled_path_armed | Is the scheduled path loaded/armed? |
 
 Never collapse native scheduler health into harness inspection health.
+
+**Progress timestamps must be durable.** Do not set `last_progress_at = observed_at` (or watermark `last_advanced_at` equal to inspect time) — the harness treats that as `suspect_progress` and opens an incident.
+
+**Recovery budgets** (`max_identical_attempts`, oscillation) apply only to harness remediation strategies, not project driver loops. Drivers must hard-stop themselves; expose `scheduled_path_armed` so the harness can detect calendar-held-by-drain.
 
 ## Checkpoint + Diagnostics
 

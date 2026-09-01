@@ -99,6 +99,31 @@ def test_supervisor_observe_only_never_mutates_runtime(tmp_path: Path) -> None:
     assert worker.restart_count == before_restarts
     assert not worker.running
     assert any(action.startswith("would_") for action in result.actions) or result.blocked
+    open_incidents = IncidentStore(tmp_path / "incidents.db").list_open(project_id="demo")
+    assert len(open_incidents) == 1
+    assert open_incidents[0].symptom == "worker_unhealthy"
+
+
+def test_supervisor_observe_only_stall_opens_incident(tmp_path: Path) -> None:
+    contract = _fast_contract()
+    worker = FakeWorker(project_id="demo", fingerprint=_full_fingerprint("test"))
+    worker.stall()
+    supervisor = Supervisor(
+        contract=contract,
+        runtime=worker,
+        state_dir=tmp_path,
+        ledger=LedgerStore(tmp_path / "ledger.db"),
+        observe_only=True,
+    )
+    supervisor.startup()
+    result = supervisor.tick()
+    supervisor.shutdown()
+
+    assert worker.restart_count == 0
+    assert any(action.startswith("would_") for action in result.actions)
+    open_incidents = IncidentStore(tmp_path / "incidents.db").list_open(project_id="demo")
+    assert len(open_incidents) == 1
+    assert open_incidents[0].symptom == "progress_stalled"
 
 
 def test_supervisor_scenario_e_blocked_persists(tmp_path: Path) -> None:

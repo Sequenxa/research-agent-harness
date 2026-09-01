@@ -23,6 +23,19 @@ from research_harness.verification import BurnInState, evaluate_burn_in, health_
 from research_harness.watchdog.evaluator import ProgressContext, WatchdogResult, evaluate_watchdog
 
 
+def _enrich_progress_context(
+    progress: ProgressContext, observed: ObservedState
+) -> ProgressContext:
+    """Fill schedule/drain signals from ObservedState when ProgressContext omits them."""
+    if progress.scheduled_path_armed is None and observed.scheduled_path_armed is not None:
+        progress.scheduled_path_armed = observed.scheduled_path_armed
+    if progress.operational_mode is None:
+        mode = observed.extra.get("operational_mode") or observed.extra.get("mode")
+        if mode is not None:
+            progress.operational_mode = str(mode)
+    return progress
+
+
 @dataclass
 class EvaluationResult:
     observed: ObservedState
@@ -119,6 +132,7 @@ class IncidentEngine:
         observed_schedule_hash: str | None = None,
     ) -> EvaluationResult:
         evaluated_at = now or datetime.now(UTC)
+        progress = _enrich_progress_context(progress, observed)
         watchdog = evaluate_watchdog(
             contract=self.contract,
             observed=observed,
@@ -183,7 +197,9 @@ class IncidentEngine:
                     "progress": watchdog.progress.value,
                     "stalled_watermarks": list(watchdog.stalled_watermarks),
                     "stalled_phases": list(watchdog.stalled_phases),
+                    "suspect_watermarks": list(watchdog.suspect_watermarks),
                     "observed_at": observed.observed_at.isoformat(),
+                    "scheduled_path_armed": observed.scheduled_path_armed,
                 },
             )
             result.incident = incident

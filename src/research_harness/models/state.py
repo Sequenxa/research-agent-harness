@@ -45,6 +45,13 @@ class ObservedState(BaseModel):
     last_checkpoint_at: datetime | None = None
     current_incident_id: str | None = None
     spend_usd: float = 0.0
+    scheduled_path_armed: bool | None = Field(
+        default=None,
+        description=(
+            "Adapter signal: whether the project's scheduled execution path is "
+            "loaded/armed. None means the adapter does not report this signal."
+        ),
+    )
     extra: dict[str, Any] = Field(default_factory=dict)
 
 

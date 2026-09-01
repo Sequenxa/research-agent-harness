@@ -364,17 +364,21 @@ class Supervisor:
 
     def _record_invariant_incident(self, invariants: InvariantEvaluation) -> None:
         failed = [result.invariant_id for result in invariants.results if not result.passed]
-        if self.observe_only:
-            self.ledger.append(
-                project_id=self.contract.project.id,
-                contract_version=self.contract.contract_version,
-                event_type=LedgerEventType.INCIDENT,
-                payload={"observe_only": True, "action": "would_open", "failed": failed},
-            )
-            return
-        self.incidents.create(
+        incident = self.incidents.create(
             project_id=self.contract.project.id,
             contract_version=self.contract.contract_version,
             symptom="invariant_violation",
-            evidence={"failed": failed},
+            evidence={"failed": failed, "observe_only": self.observe_only},
+        )
+        self.ledger.append(
+            project_id=self.contract.project.id,
+            contract_version=self.contract.contract_version,
+            event_type=LedgerEventType.INCIDENT,
+            payload={
+                "action": "open",
+                "incident_id": incident.incident_id,
+                "symptom": "invariant_violation",
+                "failed": failed,
+                "observe_only": self.observe_only,
+            },
         )

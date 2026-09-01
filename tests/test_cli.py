@@ -84,6 +84,9 @@ def test_status_without_ledger(tmp_path: Path) -> None:
     assert result.exit_code == 0, result.output
     assert "Project: demo" in result.output
     assert "Lifecycle: STOPPED" in result.output
+    # Observe-only evaluation still opens incidents (empty DB was a dogfood failure mode).
+    assert "Current incident: none" not in result.output
+    assert "Watchdog symptom: worker_unhealthy" in result.output
 
 
 def test_reconcile_cli_detects_and_fixes_stale(tmp_path: Path) -> None:

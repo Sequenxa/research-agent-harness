@@ -26,6 +26,9 @@ progress:
       source: adapter
       stall_after: 90s
   stall_requires: any
+  # Optional: escalate when recovery/drain leaves the scheduled path disarmed
+  # scheduled_path_disarmed_stall_after: 12h
+  # drain_modes: [recovery, drain, recovery-active]
 
 validity:
   expected_units: 1000   # overridden by experiment/plan.json planned_units when present
